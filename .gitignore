@@ -1,0 +1,32 @@
+# Node / pnpm
+node_modules/
+.pnpm-store/
+.pnpm-debug.log*
+npm-debug.log*
+
+# Build outputs
+build/
+dist/
+*.tsbuildinfo
+
+# Generated assets staged into public/ by scripts/stage-assets.sh
+public/pyodide/
+public/pyodide-tk-assets/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Emscripten / wasm intermediate
+*.wasm.map
+
+# Logs
+*.log
