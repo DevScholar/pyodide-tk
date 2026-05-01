@@ -1,25 +1,51 @@
-# pyodide-tk
+# PyodideTk
 
 ⚠️ Early development. Expect breaking changes.
 
-Brings unmodified Python `tkinter` to [Pyodide](https://pyodide.org/) by shipping Tcl 8.6, Tk 8.6, [em-x11](../em-x11), and CPython's `_tkinter` extension as Pyodide-loadable side modules. A standard tkinter program runs in the browser and paints widgets to a canvas — no real X server.
+Brings unmodified Python `tkinter` to [Pyodide](https://pyodide.org/) by shipping Tcl 8.6, Tk 8.6, [em-x11](https://github.com/DevScholar/em-x11), and CPython's `_tkinter` extension as Pyodide-loadable side modules. Standard desktop tkinter / turtle programs run in the browser and paint widgets to a canvas — no real X server, no source modifications.
+
+![tk-hello demo screenshot](./screenshots/tk-hello.png)
 
 ## Status
 
-Working: `tkinter.Tk()`, `Label`, `Button` with `command=` callback, `pack`, `update_idletasks`, mouse / keyboard input. Tested in Pyodide 314.0.0a1 (Python 3.14.2, Emscripten 5.0.3) under Node and in the browser via a Web Worker.
+Working in Pyodide 314.0.0a1 (Python 3.14.2, Emscripten 5.0.3) under Node and in the browser via a Web Worker:
+
+- `tkinter.Tk()`, `Label`, `Button`, `Entry`, `Canvas`, `pack`, `mainloop()`, mouse / keyboard input, `command=` callbacks
+- `turtle` module: `Screen`, `Turtle`, animation pacing, `turtle.done()`
+- Demo Python is the same code you'd run on a desktop — no `_root` exposure, no `update_idletasks()` substitute for `mainloop()`, no monkey-patching from user code
+
+Known limitations:
+
+- First `turtle.Screen()` takes ~8 s to appear (the ScrolledCanvas realize/map chain crosses a lot of EM_JS bridges, each wrapped by JSPI Suspending). Subsequent operations are responsive.
 
 ## Architecture
 
-Main thread owns the DOM, transfers an `OffscreenCanvas` to a Web Worker, and forwards mouse / keyboard events. The worker hosts everything else: Pyodide, Tcl/Tk side modules, the em-x11 host, and the Tcl event-loop pump.
+Main thread owns the DOM, transfers an `OffscreenCanvas` to a Web Worker, and forwards mouse / keyboard events as plain data. The worker hosts everything else: Pyodide, Tcl/Tk side modules, the em-x11 host, and the Tcl event-loop driver.
 
 ```
 main.ts ──postMessage──▶ worker.ts
   └── canvas (DOM)        ├── em-x11 Host (paints to OffscreenCanvas)
                           ├── Pyodide (Python 3.14 + _tkinter)
-                          └── Tcl_DoOneEvent pump (setTimeout)
+                          └── Patched Misc.mainloop (drain + JSPI yield)
 ```
 
-See [src/worker.ts](src/worker.ts) for the boot sequence and the three non-obvious fixes (defaultModule pre-binding, GIL-safe drain through `tkapp.dooneevent`, settle-then-pump).
+The non-obvious fixes that make this work, all in [src/worker.ts](src/worker.ts):
+
+1. **defaultModule pre-binding.** `host.connection.setDefaultModule(libemx11Exports)` runs before `_tkinter.so` loads so the very first `XOpenDisplay` from `tkinter.Tk()` picks up the surface — no `_tkinter.create` bootstrap, no second redundant Tk root.
+2. **GIL-safe drain.** Tcl callbacks (button `-command`, default `<Configure>` bindings) re-enter Python. Calling `Tcl_DoOneEvent` directly via `ccall` fatals on the first such callback. We drain through `tkinter._default_root.tk.dooneevent(2)` so `Tkapp_DoOneEvent`'s `ENTER_TCL`/`LEAVE_TCL` set `tcl_tstate` correctly.
+3. **Settle then pump.** Tk's realize/map/expose chain produces a burst of `after 0` callbacks. Boot drains-then-`setTimeout(0)` until quiescent, then starts a steady `setTimeout(_, 8)` pump for any background events.
+4. **JSPI sync sleep for `Misc.after`.** No-callback `Misc.after(ms)` lowers to Tcl's blocking `after delay`. Pyodide 314 uses JSPI instead of Asyncify, so `emscripten_sleep` is a no-op stub — turtle's per-step delay would burn ~7 s of CPU painting nothing. The patch routes the sync branch through `pyodide.ffi.run_sync(asyncio.sleep(...))` which suspends the wasm stack via JSPI; the JS event loop runs (browser composites a frame) then resumes.
+5. **JSPI async `mainloop`.** `Tkapp_MainLoop` busy-loops `Tcl_DoOneEvent(0)` with no JS yield, wedging the worker. We replace `tkinter.Misc.mainloop` and `tkinter.mainloop` (the module-level function `turtle.done()` ultimately calls) with a Python loop that drains via `dooneevent(2)` and yields a frame between batches.
+6. **`turtle.py` staged separately.** Pyodide strips `tkinter` *and* `turtle` from `python_stdlib.zip` (it has no Tk available). We ship the CPython 3.14.2 `Lib/turtle.py` source verbatim into `/lib/python3.14/site-packages/turtle.py`.
+
+## Demos
+
+Each demo under [demos/](demos/) is a single self-contained HTML file: an inline `<script type="text/python">` block plus a one-liner that hands it to the shared harness. View-source on either page shows exactly the unmodified desktop Python that runs in the browser.
+
+- [demos/tk-hello/](demos/tk-hello/) — `Label` + `Button` with `command=` callback, ends in `root.mainloop()`
+- [demos/turtle-hello/](demos/turtle-hello/) — `turtle.Screen()` + `Turtle()` drawing a square and writing text, ends in `turtle.done()`
+
+`pnpm dev` prints both URLs at startup.
 
 ## Prerequisites
 
@@ -44,18 +70,16 @@ pnpm install
 make all          # build libtcl8.6.so / libtk8.6.so / libemx11.so as side modules
 make tkinter      # cross-compile CPython's _tkinter.c against the side modules
 bash scripts/stage-assets.sh
-pnpm build:web    # bundle the worker + main entry via vite
+pnpm build:web    # bundle the worker + demos via vite
 ```
 
-`make all` fetches the Tcl 8.6.6 and Tk 8.6.6 source tarballs from the Tcl/SourceForge mirror on first run and rebuilds them under wasm-EH ABI. `make tkinter` extracts CPython 3.14.2 source from xbuildenv (or fetches `cpython-v3.14.2.tar.gz` from python.org if missing) and builds `_tkinter.so`. `stage-assets.sh` packs the Tcl/Tk script libraries and the `tkinter` Python package as `.tar` bundles into `public/pyodide-tk-assets/` for `py.unpackArchive` (~30× faster than per-file fetch).
+`make all` fetches Tcl 8.6.6 and Tk 8.6.6 source tarballs on first run and rebuilds them under wasm-EH ABI. `make tkinter` extracts CPython 3.14.2 source from xbuildenv (or fetches `cpython-v3.14.2.tar.gz` from python.org if missing) and builds `_tkinter.so`. `stage-assets.sh` packs the Tcl/Tk script libraries and the `tkinter` Python package as `.tar` bundles into `public/pyodide-tk-assets/` (~30× faster than per-file fetch via `py.unpackArchive`), and copies `Lib/turtle.py` alongside.
 
 ## Run
 
 ```bash
 pnpm dev
 ```
-
-The hello demo creates a Label and a Button — clicking the button updates its text via a Python callback.
 
 ## Test
 
@@ -69,11 +93,17 @@ make smoke-tcl    # minimal Tcl_CreateInterp via dlopen, no Python
 ```
 pyodide-tk/
 ├── Makefile                 # native build (libtcl, libtk, libemx11, _tkinter)
-├── scripts/stage-assets.sh  # pack tcl/tk/tkinter trees into public/pyodide-tk-assets/
+├── scripts/stage-assets.sh  # pack tcl/tk/tkinter trees + turtle.py into public/pyodide-tk-assets/
+├── vite.config.ts           # auto-discovers demos/*/index.html as Rollup inputs
+├── index.html               # landing page that lists demos
 ├── src/
-│   ├── main.ts              # DOM owner: spawns worker, transfers canvas, relays input
-│   ├── worker.ts            # Pyodide + Tk + em-x11 host; runs the event-loop pump
-│   └── worker-protocol.ts   # message types between the two
+│   ├── main.ts              # landing-page renderer (lists demos)
+│   ├── demo-harness.ts      # shared: spawns worker, transfers canvas, relays input
+│   ├── worker.ts            # Pyodide + Tk + em-x11 host; runs the event-loop driver
+│   └── worker-protocol.ts   # message types between main and worker
+├── demos/
+│   ├── tk-hello/index.html      # inline tkinter Label+Button demo
+│   └── turtle-hello/index.html  # inline turtle drawing demo
 └── tests/
     ├── node-load/smoke.mjs  # headless Node smoke test
     └── smoke_tcl.c          # `make smoke-tcl` driver

@@ -15,10 +15,10 @@ import type {
 } from './worker-protocol.js';
 
 export interface RunDemoOptions {
-  /** Python source executed once after _tkinter loads. Must bind a
-   *  module-level `root` referring to a Tk root (`tkinter.Tk()` or e.g.
-   *  `turtle.Screen()._root`) — the worker's drain helper references
-   *  `root.tk.dooneevent`. */
+  /** Python source executed once after _tkinter loads. Standard desktop
+   *  tkinter / turtle code -- typically ending in `root.mainloop()` or
+   *  `turtle.done()`. The worker's drain helper looks at
+   *  `tkinter._default_root`, so the demo doesn't need to expose anything. */
   pythonCode: string;
   /** id of the <canvas> element the worker should paint into. */
   canvasId?: string;

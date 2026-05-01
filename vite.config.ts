@@ -4,9 +4,10 @@ import { resolve } from 'node:path';
 import { readdirSync, statSync, existsSync } from 'node:fs';
 
 // pyodide-tk web demos. Mirrors em-x11's structure: each demos/<name>/
-// has its own index.html + main.ts + demo.py and is registered as a
-// Rollup input. The shared worker, harness, and worker-protocol live
-// under src/.
+// is a single index.html with the Python in an inline
+// `<script type="text/python">` and a one-liner that hands it to the
+// shared harness in src/demo-harness.ts. The shared worker, harness,
+// and worker-protocol live under src/.
 
 function listDemoEntries(): { name: string; path: string }[] {
   const demosDir = resolve(__dirname, 'demos');
@@ -60,7 +61,6 @@ export default defineConfig({
   },
 
   server: {
-    port: 5174,
     fs: {
       // Serve from sibling em-x11 source for the host TS imports.
       allow: ['.', '../em-x11'],

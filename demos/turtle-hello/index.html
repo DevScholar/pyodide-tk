@@ -46,6 +46,36 @@
     <p>Stdlib <code>turtle</code> drawing on a Tk Canvas, in the browser.</p>
     <canvas id="emx11-canvas" width="1024" height="768"></canvas>
     <div id="log">booting…</div>
-    <script type="module" src="./main.ts"></script>
+
+    <!-- Standard Python turtle, unchanged. -->
+    <script type="text/python" id="demo">
+import turtle
+
+screen = turtle.Screen()
+screen.title("hello pyodide-tk · turtle")
+
+t = turtle.Turtle()
+t.shape("turtle")
+t.pensize(3)
+t.color("steelblue")
+t.speed(3)
+
+for _ in range(4):
+    t.forward(150)
+    t.left(90)
+
+t.penup()
+t.goto(0, -120)
+t.color("crimson")
+t.write("hello, pyodide-tk!", align="center", font=("Arial", 16, "bold"))
+t.hideturtle()
+
+turtle.done()
+    </script>
+
+    <script type="module">
+      import { runDemo } from '/src/demo-harness.ts';
+      runDemo({ pythonCode: document.getElementById('demo').textContent });
+    </script>
   </body>
 </html>

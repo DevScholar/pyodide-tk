@@ -4,8 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>pyodide-tk · tk-hello</title>
-    <!-- Warm the HTTP cache for the assets the worker fetches first.
-         See ../../README.md for why these preloads matter. -->
+    <!-- Warm the HTTP cache for the assets the worker fetches first. -->
     <link rel="preload" as="fetch" type="application/wasm" crossorigin
           href="/pyodide/pyodide.asm.wasm" />
     <link rel="preload" as="fetch" crossorigin
@@ -46,6 +45,30 @@
     <p>Real Pyodide + real CPython 3.14 + real Tk widgets, all in the browser.</p>
     <canvas id="emx11-canvas" width="1024" height="768"></canvas>
     <div id="log">booting…</div>
-    <script type="module" src="./main.ts"></script>
+
+    <!-- The Python you'd run on a desktop, unchanged. -->
+    <script type="text/python" id="demo">
+import tkinter
+
+root = tkinter.Tk()
+root.title("hello pyodide-tk")
+
+tkinter.Label(root, text="hello, pyodide-tk!").pack()
+
+b = tkinter.Button(root, text="click me")
+def clicked(*_):
+    print("button clicked!")
+    b.config(text="clicked!")
+b.config(command=clicked)
+b.pack()
+
+root.mainloop()
+    </script>
+
+    <!-- Hand the inline Python to the shared worker harness. -->
+    <script type="module">
+      import { runDemo } from '/src/demo-harness.ts';
+      runDemo({ pythonCode: document.getElementById('demo').textContent });
+    </script>
   </body>
 </html>

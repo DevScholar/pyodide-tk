@@ -212,26 +212,53 @@ async function boot(
   await py._api.loadDynlib('/lib/python3.14/site-packages/_tkinter.so', { global: false, allowUndefined: true });
   phase('loadDynlib _tkinter');
 
-  // 5. Worker-side prelude: tkinter.Misc.after(ms) (the no-callback sync
-  //    sleep variant) lowers to Tcl's `after delay` which busy-loops
-  //    Tcl_DoOneEvent under wall-clock until the time elapses. In
-  //    Pyodide that burns the JS event loop -- our libemx11/libtcl/libtk
-  //    are built without Asyncify (Pyodide 314 uses JSPI instead), so
-  //    emscripten_sleep(1) inside the em-x11 notifier is an unresolved
-  //    no-op stub. Result: turtle.forward() at speed 3 stalls ~7s with
-  //    zero frames painted.
+  // 5. Worker-side prelude.
   //
-  //    Fix: monkey-patch tkinter.Misc.after to route the sync-sleep
-  //    branch through pyodide.ffi.run_sync(asyncio.sleep(...)). run_sync
-  //    suspends the Python wasm stack via JSPI, the JS event loop runs
-  //    (browser paints frames), then resumes -- exactly the yielding
-  //    semantics turtle's animation needs. All Tk's after-with-callback
-  //    paths fall through unchanged. Standard turtle / tkinter / user
-  //    code stays untouched; this patches the C-extension Python wrapper
-  //    only, in our worker prelude.
+  //    Patch 1 -- tkinter.Misc.after(ms) sync sleep:
+  //    The no-callback variant of Misc.after lowers to Tcl's sync
+  //    `after delay`, which busy-loops Tcl_DoOneEvent under wallclock
+  //    until the time elapses. libemx11/libtcl/libtk are built without
+  //    Asyncify (Pyodide 314 uses JSPI instead) so emscripten_sleep(1)
+  //    inside em-x11's notifier resolves to a no-op stub. Without a
+  //    yield, turtle's per-step _cv.after(delay) burns ~7s of CPU
+  //    while painting nothing. Routing the sync-sleep branch through
+  //    pyodide.ffi.run_sync(asyncio.sleep(...)) suspends the wasm stack
+  //    via JSPI, the JS event loop runs (browser composites a frame),
+  //    then resumes -- exactly the yielding semantics turtle needs.
+  //    Misc.after-with-callback paths fall through unchanged.
+  //
+  //    Patch 2 -- Misc.mainloop / tkinter.mainloop JSPI loop:
+  //    Standard desktop tkinter / turtle code ends with `root.mainloop()`
+  //    or `turtle.done()` (which calls `tkinter.mainloop()`). The C
+  //    Tkapp_MainLoop calls Tcl_DoOneEvent(0) in a tight loop with no
+  //    yield to JS, so the browser never composites and the worker is
+  //    wedged. Replace both entry points with an async loop that drains
+  //    via dooneevent(2) (TCL_DONT_WAIT) and yields a frame between
+  //    batches via JSPI run_sync. Loop exits naturally when the interp
+  //    is deleted (root.destroy()), at which point tk.dooneevent raises.
+  //
+  //    Note: we deliberately do NOT patch Misc.update / Misc.update_idletasks
+  //    to yield. Those are "flush pending events" not "show now" -- the
+  //    next yield (a Misc.after sleep, or mainloop's batch yield) will
+  //    composite the post-update state. Yielding inside update() makes
+  //    turtle's _Screen.setup() show its default-sized scroll area for
+  //    a frame before the geometry resize lands.
+  //
+  //    Standard turtle / tkinter / user code stays untouched -- we
+  //    only patch the C-extension Python wrappers, here in the worker
+  //    prelude.
   await py.runPythonAsync(`
-import tkinter, asyncio
-from pyodide.ffi import run_sync
+import tkinter, asyncio, js
+from pyodide.ffi import run_sync, create_once_callable
+
+async def _emx11_yield_frame():
+    fut = asyncio.get_event_loop().create_future()
+    # create_once_callable: keep the Python callback alive until JS
+    # actually fires it. A bare lambda would be a borrowed proxy that
+    # Pyodide auto-destroys when js.setTimeout returns.
+    js.setTimeout(create_once_callable(lambda: fut.set_result(None)), 0)
+    await fut
+
 _emx11_orig_after = tkinter.Misc.after
 def _emx11_yielding_after(self, ms, func=None, *args):
     if func is None:
@@ -239,15 +266,43 @@ def _emx11_yielding_after(self, ms, func=None, *args):
         return None
     return _emx11_orig_after(self, ms, func, *args)
 tkinter.Misc.after = _emx11_yielding_after
+
+async def _emx11_async_mainloop_for(root):
+    while True:
+        n = 0
+        while n < 256:
+            try:
+                more = root.tk.dooneevent(2)
+            except Exception:
+                return
+            if not more:
+                break
+            n += 1
+        await _emx11_yield_frame()
+
+def _emx11_misc_mainloop(self, n=0):
+    run_sync(_emx11_async_mainloop_for(self))
+tkinter.Misc.mainloop = _emx11_misc_mainloop
+
+def _emx11_module_mainloop(n=0):
+    root = tkinter._default_root
+    if root is None:
+        return
+    run_sync(_emx11_async_mainloop_for(root))
+tkinter.mainloop = _emx11_module_mainloop
 `);
-  phase('install Misc.after JSPI yield patch');
+  phase('install yield patches');
 
   // 6. Run the user's app code via runPythonAsync so the wasm call stack
   //    is JSPI-suspendable (required for the run_sync inside the patched
-  //    tkinter.Misc.after to actually suspend rather than fault).
-  //
-  //    Demo must still bind a module-level `root = tkinter.Tk()` (or
-  //    `Screen()._root`); the drain helper below references it.
+  //    tkinter.Misc.after / mainloop to actually suspend rather than
+  //    fault). Standard desktop tkinter / turtle code is supported
+  //    unchanged: if the demo ends with `root.mainloop()` or
+  //    `turtle.done()`, our patched mainloop drives events forever via
+  //    JSPI yields, and runPythonAsync never returns. If the demo just
+  //    paints once and exits, control falls through to the JS pump
+  //    below, which keeps draining for any background events.
+  post({ type: 'ready' });
   await py.runPythonAsync(demoCode);
   phase('runPython demoCode (async)');
 
@@ -260,8 +315,14 @@ tkinter.Misc.after = _emx11_yielding_after
   //    ccall fatals on the first such callback ("PyEval_RestoreThread:
   //    GIL is released, current Python thread state is NULL"). Drain
   //    inside Python so we pay only one PyProxy crossing per tick.
+  //    Use tkinter._default_root so the demo doesn't have to expose
+  //    anything -- standard `tkinter.Tk()` / `turtle.Screen()` both set
+  //    _default_root automatically.
   py.runPython(`
 def _emx11_drain(max_n=256):
+    root = tkinter._default_root
+    if root is None:
+        return 0
     n = 0
     while n < max_n and root.tk.dooneevent(2):
         n += 1
@@ -290,6 +351,4 @@ def _emx11_drain(max_n=256):
     setTimeout(pump, 8);
   }
   setTimeout(pump, 0);
-
-  post({ type: 'ready' });
 }
