@@ -44,6 +44,12 @@ pack_tree build/tcl/library                                "$PUB/tcl-library.tar
 pack_tree build/tk/library                                 "$PUB/tk-library.tar"
 pack_tree build/cpython-src/cpython-3.14.2/Lib/tkinter     "$PUB/tkinter.tar"
 
+# turtle.py is a single-file stdlib module that imports tkinter. Pyodide
+# strips it from python_stdlib.zip (along with tkinter) since stock
+# Pyodide has no _tkinter.so. Stage it as a plain file -- the worker
+# writes it to site-packages alongside _tkinter.so.
+cp -u build/cpython-src/cpython-3.14.2/Lib/turtle.py "$PUB/turtle.py"
+
 # Drop any old per-file trees so the dev server doesn't keep serving
 # them (and so the build dir doesn't grow stale copies).
 rm -rf "$PUB/tcl-library" "$PUB/tk-library" "$PUB/tkinter"

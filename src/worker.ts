@@ -91,18 +91,56 @@ async function boot(
   height: number,
   demoCode: string,
 ): Promise<void> {
+  // Phase timer: log how long each chunk of boot takes so we can target
+  // optimisation at the actual bottleneck (Pyodide init? unpackArchive?
+  // loadDynlib? Tk realize/map?). All times in ms, relative to boot start.
+  const t0 = performance.now();
+  let tPrev = t0;
+  const phase = (label: string): void => {
+    const now = performance.now();
+    note(`[boot] +${(now - tPrev).toFixed(0).padStart(4)}ms  ${(now - t0).toFixed(0).padStart(5)}ms total  ${label}`);
+    tPrev = now;
+  };
+
   // 1. Install em-x11 host on this worker's globalThis BEFORE Pyodide
   //    loads libemx11.so -- the EM_JS bridges in libemx11 read
   //    globalThis.__EMX11__ synchronously from each X call.
   host = new Host({ surface, width, height });
   host.install();
+  phase('host installed');
 
-  // 2. Load Pyodide. In a worker we still resolve URLs against the page
+  // 2. Kick off ALL pyodide-tk asset downloads NOW, before we even import
+  //    pyodide.mjs. The HTTP layer fetches them concurrently with Pyodide's
+  //    own pyodide.asm.wasm (~9 MB) + python_stdlib.zip downloads, instead
+  //    of waiting until loadPyodide() resolves. We bind ArrayBuffer
+  //    promises here and `await` them later when staging to MEMFS.
+  //    `<link rel="preload">` in index.html warms the connection earlier
+  //    still; this turns the cache hit into actual parallel transfer.
+  const fetchAB = (url: string): Promise<ArrayBuffer> =>
+    fetch(url).then((r) => {
+      if (!r.ok) throw new Error(`fetch ${url}: ${r.status}`);
+      return r.arrayBuffer();
+    });
+  const A = '/pyodide-tk-assets';
+  const pending = {
+    libtcl:    fetchAB(`${A}/lib/libtcl8.6.so`),
+    libtk:     fetchAB(`${A}/lib/libtk8.6.so`),
+    libemx11:  fetchAB(`${A}/lib/libemx11.so`),
+    tkinterSo: fetchAB(`${A}/lib/_tkinter.so`),
+    turtle:    fetchAB(`${A}/turtle.py`),
+    tclLib:    fetchAB(`${A}/tcl-library.tar`),
+    tkLib:     fetchAB(`${A}/tk-library.tar`),
+    tkinterTar:fetchAB(`${A}/tkinter.tar`),
+  };
+  phase('asset fetches kicked off');
+
+  // 3. Load Pyodide. In a worker we still resolve URLs against the page
   //    origin (same as main-thread path). importScripts is gone in
   //    type=module workers; use dynamic import.
   const pyodideUrl = new URL('/pyodide/pyodide.mjs', ctx.location.origin).href;
   const indexURL = new URL('/pyodide/', ctx.location.origin).href;
   const { loadPyodide } = await import(/* @vite-ignore */ pyodideUrl);
+  phase('import(pyodide.mjs)');
 
   const py = await loadPyodide({
     indexURL,
@@ -113,48 +151,45 @@ async function boot(
       HOME: '/home/pyodide',
     },
   });
+  phase('loadPyodide');
 
-  // 3. Stage all assets from /pyodide-tk-assets/ into Pyodide's MEMFS.
-  //    Side modules (.so) are 4 small files — fetch directly. Script
-  //    libraries (tcl ~832 / tk ~170 / tkinter ~13 files) ship as a
-  //    single .tar each; py.unpackArchive extracts them in C, which is
-  //    ~30x faster than 1000+ per-file fetch+writeFile round-trips.
-  async function fetchBytes(url: string): Promise<Uint8Array> {
-    const r = await fetch(url);
-    if (!r.ok) throw new Error(`fetch ${url}: ${r.status}`);
-    return new Uint8Array(await r.arrayBuffer());
-  }
-  async function stageFile(srcUrl: string, memPath: string): Promise<void> {
-    const bytes = await fetchBytes(srcUrl);
-    const dir = memPath.replace(/\/[^/]+$/, '');
-    if (dir) py.FS.mkdirTree(dir);
-    py.FS.writeFile(memPath, bytes);
-  }
-  async function stageTar(srcUrl: string, extractDir: string): Promise<void> {
-    py.FS.mkdirTree(extractDir);
-    const r = await fetch(srcUrl);
-    if (!r.ok) throw new Error(`fetch ${srcUrl}: ${r.status}`);
-    const buf = await r.arrayBuffer();
-    py.unpackArchive(buf, 'tar', { extractDir });
-  }
-
+  // 4. Stage the prefetched bytes into Pyodide's MEMFS. .so files +
+  //    turtle.py go via FS.writeFile; the tcl/tk/tkinter trees ship as
+  //    one .tar each and are extracted via py.unpackArchive (in C, ~30x
+  //    faster than 1000+ per-file FS.writeFile round-trips).
   py.FS.mkdirTree('/usr/lib');
   py.FS.mkdirTree('/lib/python3.14/site-packages');
-  await stageFile('/pyodide-tk-assets/lib/libtcl8.6.so', '/usr/lib/libtcl8.6.so');
-  await stageFile('/pyodide-tk-assets/lib/libtk8.6.so',  '/usr/lib/libtk8.6.so');
-  await stageFile('/pyodide-tk-assets/lib/libemx11.so',  '/usr/lib/libemx11.so');
-  await stageFile('/pyodide-tk-assets/lib/_tkinter.so',  '/lib/python3.14/site-packages/_tkinter.so');
+  const writeFromBuf = (buf: ArrayBuffer, memPath: string): void => {
+    py.FS.writeFile(memPath, new Uint8Array(buf));
+  };
+  writeFromBuf(await pending.libtcl,    '/usr/lib/libtcl8.6.so');
+  writeFromBuf(await pending.libtk,     '/usr/lib/libtk8.6.so');
+  writeFromBuf(await pending.libemx11,  '/usr/lib/libemx11.so');
+  writeFromBuf(await pending.tkinterSo, '/lib/python3.14/site-packages/_tkinter.so');
+  // turtle is a single-file stdlib module that imports tkinter; Pyodide
+  // strips it from python_stdlib.zip alongside tkinter, so we stage the
+  // CPython source copy next to _tkinter.so. Cheap (~150 KB) and lets
+  // any demo `import turtle` regardless of whether it uses it.
+  writeFromBuf(await pending.turtle,    '/lib/python3.14/site-packages/turtle.py');
+  phase('stage .so + turtle.py');
 
-  await stageTar('/pyodide-tk-assets/tcl-library.tar', '/usr/lib/tcl8.6');
-  await stageTar('/pyodide-tk-assets/tk-library.tar', '/usr/lib/tk8.6');
-  await stageTar('/pyodide-tk-assets/tkinter.tar', '/lib/python3.14/site-packages/tkinter');
+  py.FS.mkdirTree('/usr/lib/tcl8.6');
+  py.FS.mkdirTree('/usr/lib/tk8.6');
+  py.FS.mkdirTree('/lib/python3.14/site-packages/tkinter');
+  py.unpackArchive(await pending.tclLib,     'tar', { extractDir: '/usr/lib/tcl8.6' });
+  phase('unpack tcl-library.tar');
+  py.unpackArchive(await pending.tkLib,      'tar', { extractDir: '/usr/lib/tk8.6' });
+  phase('unpack tk-library.tar');
+  py.unpackArchive(await pending.tkinterTar, 'tar', { extractDir: '/lib/python3.14/site-packages/tkinter' });
+  phase('unpack tkinter.tar');
 
-  // 4. Load side modules. libemx11 is the bridge entry point -- nothing
+  // 5. Load side modules. libemx11 is the bridge entry point -- nothing
   //    else NEEDs it, so load manually. Loading it pulls libtcl via
   //    libemx11's NEEDED entry (see Makefile $(LIBDIR)/libemx11.so step).
   //    _tkinter then pulls libtk via NEEDED, and libtk's Xlib refs
   //    resolve against the already-loaded libemx11.
   await py._api.loadDynlib('/usr/lib/libemx11.so', { global: true, allowUndefined: true });
+  phase('loadDynlib libemx11');
 
   // 4b. Install browser-friendly Tcl notifier BEFORE Tk_Init runs.
   const libemx11Exports = py._module.LDSO.loadedLibsByName['/usr/lib/libemx11.so']?.exports;
@@ -175,14 +210,46 @@ async function boot(
   host.connection.setDefaultModule(moduleSurface);
 
   await py._api.loadDynlib('/lib/python3.14/site-packages/_tkinter.so', { global: false, allowUndefined: true });
+  phase('loadDynlib _tkinter');
 
-  // 5. Run the user's app code. It must create a `root = tkinter.Tk()`
-  //    binding in __main__; the drain helper below references it. The
-  //    very first XOpenDisplay picks up the surface via the defaultModule
-  //    set above -- no manual `_tkinter.create` bootstrap needed (which
-  //    would create a second redundant Tk root that obscures the real
-  //    widgets).
-  py.runPython(demoCode);
+  // 5. Worker-side prelude: tkinter.Misc.after(ms) (the no-callback sync
+  //    sleep variant) lowers to Tcl's `after delay` which busy-loops
+  //    Tcl_DoOneEvent under wall-clock until the time elapses. In
+  //    Pyodide that burns the JS event loop -- our libemx11/libtcl/libtk
+  //    are built without Asyncify (Pyodide 314 uses JSPI instead), so
+  //    emscripten_sleep(1) inside the em-x11 notifier is an unresolved
+  //    no-op stub. Result: turtle.forward() at speed 3 stalls ~7s with
+  //    zero frames painted.
+  //
+  //    Fix: monkey-patch tkinter.Misc.after to route the sync-sleep
+  //    branch through pyodide.ffi.run_sync(asyncio.sleep(...)). run_sync
+  //    suspends the Python wasm stack via JSPI, the JS event loop runs
+  //    (browser paints frames), then resumes -- exactly the yielding
+  //    semantics turtle's animation needs. All Tk's after-with-callback
+  //    paths fall through unchanged. Standard turtle / tkinter / user
+  //    code stays untouched; this patches the C-extension Python wrapper
+  //    only, in our worker prelude.
+  await py.runPythonAsync(`
+import tkinter, asyncio
+from pyodide.ffi import run_sync
+_emx11_orig_after = tkinter.Misc.after
+def _emx11_yielding_after(self, ms, func=None, *args):
+    if func is None:
+        run_sync(asyncio.sleep(ms / 1000))
+        return None
+    return _emx11_orig_after(self, ms, func, *args)
+tkinter.Misc.after = _emx11_yielding_after
+`);
+  phase('install Misc.after JSPI yield patch');
+
+  // 6. Run the user's app code via runPythonAsync so the wasm call stack
+  //    is JSPI-suspendable (required for the run_sync inside the patched
+  //    tkinter.Misc.after to actually suspend rather than fault).
+  //
+  //    Demo must still bind a module-level `root = tkinter.Tk()` (or
+  //    `Screen()._root`); the drain helper below references it.
+  await py.runPythonAsync(demoCode);
+  phase('runPython demoCode (async)');
 
   // 6. Define the drain helper. Going through tkinter.Tk()'s
   //    tkapp.dooneevent is mandatory for GIL safety: Tkapp_DoOneEvent
@@ -206,10 +273,16 @@ def _emx11_drain(max_n=256):
   //    callbacks. Drain → setTimeout(0) → drain until quiescent so
   //    those timers fire (the browser-friendly Tcl notifier translates
   //    them to real setTimeout(0)s).
+  let settleIters = 0;
+  let settleDrained = 0;
   for (let i = 0; i < 20; i++) {
-    if (drain(1024) === 0) break;
+    const n = drain(1024);
+    settleDrained += n;
+    settleIters++;
+    if (n === 0) break;
     await new Promise<void>((r) => setTimeout(r, 0));
   }
+  phase(`settle (${settleIters} iters, ${settleDrained} events drained)`);
 
   // 8. Start the long-running pump (one drain per setTimeout tick).
   function pump(): void {

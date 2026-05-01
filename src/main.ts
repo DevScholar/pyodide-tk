@@ -1,127 +1,32 @@
 /**
- * pyodide-tk main thread.
- *
- * Owns the DOM: spawns the worker, transfers canvas control via
- * OffscreenCanvas, and relays mouse/keyboard events. The worker does
- * everything else (Pyodide, Tk, em-x11 host, event pump). See
- * src/worker.ts.
+ * Landing page for the pyodide-tk dev server. Lists available demos.
+ * Real application UX is per-demo under demos/<name>/.
  */
 
-import { keyEventToKeysym, modifiersFromEvent } from '@emx11/runtime/keymap.js';
-import type {
-  WorkerInboundMessage,
-  WorkerOutboundMessage,
-} from './worker-protocol.js';
+const demos = [
+  { name: 'tk-hello', description: 'Minimal Tk: Label + Button with -command callback' },
+  { name: 'turtle-hello', description: 'Stdlib turtle graphics on a Tk Canvas' },
+];
 
-const log = document.getElementById('log')!;
-function note(...parts: unknown[]): void {
-  const line = parts
-    .map((p) => (typeof p === 'string' ? p : JSON.stringify(p)))
-    .join(' ');
-  log.textContent += `\n${line}`;
-  // eslint-disable-next-line no-console
-  console.log('[pyodide-tk]', ...parts);
-}
+const root = document.getElementById('app');
+if (root) {
+  const title = document.createElement('h1');
+  title.textContent = 'pyodide-tk demos';
+  root.appendChild(title);
 
-const canvas = document.getElementById('emx11-canvas') as HTMLCanvasElement;
+  const intro = document.createElement('p');
+  intro.textContent =
+    'Real Pyodide + real CPython 3.14 + real Tk widgets, painted to a canvas via em-x11.';
+  root.appendChild(intro);
 
-if (!canvas.transferControlToOffscreen) {
-  throw new Error('OffscreenCanvas unsupported -- pyodide-tk requires a modern browser');
-}
-
-const surface = canvas.transferControlToOffscreen();
-
-const worker = new Worker(new URL('./worker.ts', import.meta.url), {
-  type: 'module',
-  name: 'pyodide-tk',
-});
-
-worker.addEventListener('message', (ev: MessageEvent<WorkerOutboundMessage>) => {
-  const msg = ev.data;
-  switch (msg.type) {
-    case 'log': note(msg.line); break;
-    case 'ready': note('worker ready'); break;
-    case 'error': note('worker ERROR:', msg.message); break;
+  const list = document.createElement('ul');
+  for (const demo of demos) {
+    const li = document.createElement('li');
+    const a = document.createElement('a');
+    a.href = `/demos/${demo.name}/`;
+    a.textContent = `${demo.name} — ${demo.description}`;
+    li.appendChild(a);
+    list.appendChild(li);
   }
-});
-
-const initMsg: WorkerInboundMessage = {
-  type: 'init',
-  surface,
-  width: canvas.width,
-  height: canvas.height,
-  demoCode: `
-import tkinter
-root = tkinter.Tk()
-root.title("hello pyodide-tk")
-tkinter.Label(root, text="hello, pyodide-tk!").pack()
-b = tkinter.Button(root, text="click me")
-def clicked(*_):
-    print("button clicked!")
-    b.config(text="clicked!")
-b.config(command=clicked)
-b.pack()
-root.update_idletasks()
-`,
-};
-worker.postMessage(initMsg, [surface]);
-
-// --- input relay ----------------------------------------------------------
-
-function send(msg: WorkerInboundMessage): void {
-  worker.postMessage(msg);
+  root.appendChild(list);
 }
-
-function cssPoint(e: MouseEvent): { x: number; y: number } {
-  const rect = canvas.getBoundingClientRect();
-  return { x: (e.clientX - rect.left) | 0, y: (e.clientY - rect.top) | 0 };
-}
-
-canvas.addEventListener('mousedown', (e) => {
-  canvas.focus();
-  const { x, y } = cssPoint(e);
-  send({
-    type: 'mousedown', x, y,
-    button: e.button + 1,
-    modifiers: modifiersFromEvent(e),
-  });
-});
-
-// mouseup/mousemove on window so a release outside the canvas during
-// a drag still reaches the C-side implicit grab (mirrors the in-process
-// path's `window.addEventListener` choice).
-window.addEventListener('mouseup', (e) => {
-  const { x, y } = cssPoint(e);
-  send({
-    type: 'mouseup', x, y,
-    button: e.button + 1,
-    modifiers: modifiersFromEvent(e),
-  });
-});
-
-window.addEventListener('mousemove', (e) => {
-  const { x, y } = cssPoint(e);
-  send({
-    type: 'mousemove', x, y, button: 0,
-    modifiers: modifiersFromEvent(e),
-  });
-});
-
-canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-
-// Make canvas keyboard-focusable so KeyboardEvents have a meaningful
-// activeElement check.
-canvas.tabIndex = 0;
-
-window.addEventListener('keydown', (e) => relayKey('keydown', e));
-window.addEventListener('keyup',   (e) => relayKey('keyup',   e));
-
-function relayKey(type: 'keydown' | 'keyup', e: KeyboardEvent): void {
-  const keysym = keyEventToKeysym(e);
-  if (keysym === 0) return;
-  const hasFocus = document.activeElement === canvas;
-  if (hasFocus) e.preventDefault();
-  send({ type, keysym, modifiers: modifiersFromEvent(e), hasFocus });
-}
-
-note('main: worker spawned, canvas transferred');

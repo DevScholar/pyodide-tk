@@ -227,11 +227,17 @@ $(CPYTHON_SRC)/_tkinter.c: $(CPYTHON_SRC)/$(CPYTHON_TARBALL)
 	# also need a few private headers under Include/internal/).
 	cd $(CPYTHON_SRC) && tar -xf $(CPYTHON_TARBALL) \
 		Python-$(CPYTHON_VERSION)/Modules/_tkinter.c \
+		Python-$(CPYTHON_VERSION)/Modules/tkinter.h \
 		Python-$(CPYTHON_VERSION)/Modules/tkappinit.c \
+		Python-$(CPYTHON_VERSION)/Modules/clinic/_tkinter.c.h \
 		Python-$(CPYTHON_VERSION)/Include \
-		Python-$(CPYTHON_VERSION)/Lib/tkinter
+		Python-$(CPYTHON_VERSION)/Lib/tkinter \
+		Python-$(CPYTHON_VERSION)/Lib/turtle.py
 	cp $(CPYTHON_SRC)/Python-$(CPYTHON_VERSION)/Modules/_tkinter.c $(CPYTHON_SRC)/_tkinter.c
+	cp $(CPYTHON_SRC)/Python-$(CPYTHON_VERSION)/Modules/tkinter.h $(CPYTHON_SRC)/tkinter.h
 	cp $(CPYTHON_SRC)/Python-$(CPYTHON_VERSION)/Modules/tkappinit.c $(CPYTHON_SRC)/tkappinit.c
+	mkdir -p $(CPYTHON_SRC)/clinic
+	cp $(CPYTHON_SRC)/Python-$(CPYTHON_VERSION)/Modules/clinic/_tkinter.c.h $(CPYTHON_SRC)/clinic/_tkinter.c.h
 	cp -r $(CPYTHON_SRC)/Python-$(CPYTHON_VERSION)/Include $(CPYTHON_SRC)/Include
 	# stage-assets.sh expects this layout:
 	mkdir -p $(CPYTHON_SRC)/cpython-$(CPYTHON_VERSION)

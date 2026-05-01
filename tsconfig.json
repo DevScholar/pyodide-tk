@@ -21,6 +21,6 @@
       "@emx11/*": ["../em-x11/src/*"]
     }
   },
-  "include": ["src/**/*.ts", "vite.config.ts"],
+  "include": ["src/**/*.ts", "demos/**/*.ts", "vite.config.ts"],
   "exclude": ["node_modules", "public", "build", "tests"]
 }

@@ -55,7 +55,7 @@ pnpm build:web    # bundle the worker + main entry via vite
 pnpm dev
 ```
 
-Opens [http://localhost:5174](http://localhost:5174). The hello demo creates a Label and a Button — clicking the button updates its text via a Python callback.
+The hello demo creates a Label and a Button — clicking the button updates its text via a Python callback.
 
 ## Test
 
