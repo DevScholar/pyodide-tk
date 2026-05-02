@@ -14,10 +14,6 @@ Working in Pyodide 314.0.0a1 (Python 3.14.2, Emscripten 5.0.3) under Node and in
 - `turtle` module: `Screen`, `Turtle`, animation pacing, `turtle.done()`
 - Demo Python is the same code you'd run on a desktop — no `_root` exposure, no `update_idletasks()` substitute for `mainloop()`, no monkey-patching from user code
 
-Known limitations:
-
-- First `turtle.Screen()` takes ~8 s to appear (the ScrolledCanvas realize/map chain crosses a lot of EM_JS bridges, each wrapped by JSPI Suspending). Subsequent operations are responsive.
-
 ## Architecture
 
 Main thread owns the DOM, transfers an `OffscreenCanvas` to a Web Worker, and forwards mouse / keyboard events as plain data. The worker hosts everything else: Pyodide, Tcl/Tk side modules, the em-x11 host, and the Tcl event-loop driver.
