@@ -73,7 +73,9 @@ bash scripts/stage-assets.sh
 pnpm build:web    # bundle the worker + demos via vite
 ```
 
-`make all` fetches Tcl 8.6.6 and Tk 8.6.6 source tarballs on first run and rebuilds them under wasm-EH ABI. `make tkinter` extracts CPython 3.14.2 source from xbuildenv (or fetches `cpython-v3.14.2.tar.gz` from python.org if missing) and builds `_tkinter.so`. `stage-assets.sh` packs the Tcl/Tk script libraries and the `tkinter` Python package as `.tar` bundles into `public/pyodide-tk-assets/` (~30× faster than per-file fetch via `py.unpackArchive`), and copies `Lib/turtle.py` alongside.
+`make all` fetches Tcl 8.6.6 and Tk 8.6.6 source tarballs on first run and rebuilds them under wasm-EH ABI. `make tkinter` extracts CPython 3.14.2 source from xbuildenv (or fetches `cpython-v3.14.2.tar.gz` from python.org if missing) and builds `_tkinter.so`. `stage-assets.sh` copies the freshly built `.so` files (`libtcl8.6.so`, `libtk8.6.so`, `libemx11.so`, `_tkinter.so`) into `public/pyodide-tk-assets/lib/`, packs the Tcl/Tk script libraries and the `tkinter` Python package as `.tar` bundles (~30× faster than per-file fetch via `py.unpackArchive`), and copies `Lib/turtle.py` alongside.
+
+> **Re-run `stage-assets.sh` after every `make all` / `make tkinter` rebuild.** Vite serves from `public/pyodide-tk-assets/`, not `build/install/`, and Make has no rule copying between them. Skipping it leaves the dev server pinning the previous build — a fresh native fix will look like it didn't take effect.
 
 ## Run
 

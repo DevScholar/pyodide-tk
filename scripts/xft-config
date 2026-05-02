@@ -1,0 +1,29 @@
+#!/bin/sh
+# em-x11 xft-config shim used at Tk configure time.
+#
+# Tk's tk/unix/configure probes for Xft via `xft-config --cflags / --libs`
+# (with pkg-config as a fallback). Real xft-config is part of libXft's
+# upstream install, which we don't ship; this stub feeds the probe the
+# em-x11 paths so configure picks up our X11/Xft/Xft.h and fontconfig.h.
+# Xft/Fc symbols stay unresolved in libtk8.6.a and are filled at the
+# side-module link / Pyodide load step by libemx11.so.
+#
+# EMX11_INCLUDES / EMX11_LIBDIR are exported by the parent Makefile.
+
+set -e
+
+case "$1" in
+    --cflags)
+        printf -- '-I%s\n' "${EMX11_INCLUDES:?EMX11_INCLUDES not set}"
+        ;;
+    --libs)
+        printf -- '-L%s -lemx11\n' "${EMX11_LIBDIR:?EMX11_LIBDIR not set}"
+        ;;
+    --version)
+        echo "2.3.13"
+        ;;
+    *)
+        echo "xft-config (em-x11 shim): unknown arg: $*" >&2
+        exit 1
+        ;;
+esac

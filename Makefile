@@ -123,14 +123,22 @@ $(BUILD)/tk/unix/configure: $(BUILD)/$(TK_TARBALL)
 tkprep: $(BUILD)/tk/unix/configure
 
 $(BUILD)/tk/unix/Makefile: $(BUILD)/tk/unix/configure $(LIBDIR)/libtcl8.6.a
-	cd $(BUILD)/tk/unix && emconfigure ./configure \
+	chmod +x $(CURDIR)/scripts/xft-config
+	cd $(BUILD)/tk/unix && \
+		PATH="$(CURDIR)/scripts:$$PATH" \
+		EMX11_INCLUDES="$(EMX11_INCLUDES)" \
+		EMX11_LIBDIR="$(LIBDIR)" \
+		ac_cv_lib_Xft_XftFontOpen=yes \
+		ac_cv_lib_fontconfig_FcFontSort=no \
+		cross_compiling=yes \
+		emconfigure ./configure \
 		--host=wasm32-unknown-emscripten \
 		--prefix=$(PREFIX) \
 		--with-tcl=$(LIBDIR) \
 		--x-includes=$(EMX11_INCLUDES) \
 		--x-libraries=$(LIBDIR) \
 		--disable-threads --disable-load --disable-shared \
-		--disable-xft --disable-xss \
+		--disable-xss \
 		CFLAGS="$(CFLAGS_X)" LDFLAGS="$(LDFLAGS_X)"
 	# Force our flags + header order over what configure's probe inserts.
 	cd $(BUILD)/tk/unix && sed -i 's/-O2//g' Makefile
