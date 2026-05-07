@@ -26,6 +26,7 @@ fi
 
 # Side modules.
 cp -u "$LIB"/libtcl8.6.so "$LIB"/libtk8.6.so "$LIB"/libemx11.so "$PUB/lib/"
+cp -u "$LIB"/libwacl.so "$PUB/lib/" 2>/dev/null || echo "  (libwacl.so missing -- ::wacl::dom / ::wacl::jscall unavailable)"
 cp -u "$TKD"/_tkinter.so "$PUB/lib/"
 
 # Tcl + Tk script libraries: pack each tree as a single tarball. The

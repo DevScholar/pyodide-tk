@@ -113,6 +113,7 @@ async function boot(
     libtcl:    fetchAB(`${A}/lib/libtcl8.6.so`),
     libtk:     fetchAB(`${A}/lib/libtk8.6.so`),
     libemx11:  fetchAB(`${A}/lib/libemx11.so`),
+    libwacl:   fetchAB(`${A}/lib/libwacl.so`).catch(() => null),
     tkinterSo: fetchAB(`${A}/lib/_tkinter.so`),
     turtle:    fetchAB(`${A}/turtle.py`),
     tclLib:    fetchAB(`${A}/tcl-library.tar`),
@@ -149,6 +150,8 @@ async function boot(
   writeFromBuf(await pending.libtcl,    '/usr/lib/libtcl8.6.so');
   writeFromBuf(await pending.libtk,     '/usr/lib/libtk8.6.so');
   writeFromBuf(await pending.libemx11,  '/usr/lib/libemx11.so');
+  const libwaclBuf = await pending.libwacl;
+  if (libwaclBuf) writeFromBuf(libwaclBuf, '/usr/lib/libwacl.so');
   writeFromBuf(await pending.tkinterSo, '/lib/python3.14/site-packages/_tkinter.so');
   // turtle is a single-file stdlib module that imports tkinter; Pyodide
   // strips it from python_stdlib.zip alongside tkinter, so we stage the
@@ -196,6 +199,14 @@ async function boot(
 
   await py._api.loadDynlib('/lib/python3.14/site-packages/_tkinter.so', { global: false, allowUndefined: true });
 
+  // 4d. libwacl: ::wacl::dom and ::wacl::jscall Tcl commands. Loaded
+  //     globally so its Wacl_Init export is reachable via ctypes.CDLL.
+  //     Optional -- if the .so is missing (sibling wacl-tk not built),
+  //     we skip silently and the prelude below no-ops.
+  if (libwaclBuf) {
+    await py._api.loadDynlib('/usr/lib/libwacl.so', { global: true, allowUndefined: true });
+  }
+
   // 5. Worker-side prelude.
   //
   //    Patch 1 -- tkinter.Misc.after(ms) sync sleep:
@@ -232,8 +243,29 @@ async function boot(
   //    only patch the C-extension Python wrappers, here in the worker
   //    prelude.
   await py.runPythonAsync(`
-import tkinter, asyncio, js
+import tkinter, asyncio, js, ctypes
 from pyodide.ffi import run_sync, create_once_callable
+
+# wacl bridge: ::wacl::dom and ::wacl::jscall Tcl commands. The .so is
+# loaded globally above; bind Wacl_Init via ctypes and call it on every
+# Tk root immediately after construction so demos can use the commands
+# without any setup boilerplate. If libwacl wasn't shipped (sibling
+# wacl-tk not built), the CDLL load fails and we leave Tk.__init__
+# alone -- standard tkinter still works, ::wacl::* just isn't there.
+try:
+    _wacl = ctypes.CDLL('/usr/lib/libwacl.so')
+    _wacl.Wacl_Init.argtypes = [ctypes.c_void_p]
+    _wacl.Wacl_Init.restype  = ctypes.c_int
+    _wacl_orig_tk_init = tkinter.Tk.__init__
+    def _wacl_install_on_tk(self, *a, **kw):
+        _wacl_orig_tk_init(self, *a, **kw)
+        try:
+            _wacl.Wacl_Init(self.tk.interpaddr())
+        except Exception as e:
+            print('wacl: Wacl_Init failed:', e)
+    tkinter.Tk.__init__ = _wacl_install_on_tk
+except OSError:
+    pass
 
 async def _emx11_yield_frame():
     fut = asyncio.get_event_loop().create_future()

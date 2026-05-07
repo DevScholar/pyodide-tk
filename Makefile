@@ -44,7 +44,7 @@ SIDE_LDFLAGS = -sSIDE_MODULE=1 $(WASMEH)
 
 .PHONY: all tclprep tkprep tkinter clean distclean toolcheck smoke-tcl libtcl-so
 
-all: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(LIBDIR)/libemx11.so
+all: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(LIBDIR)/libemx11.so $(LIBDIR)/libwacl.so
 
 # smoke-tcl needs an alias because the recipe doesn't reference the .so by path.
 libtcl-so: $(LIBDIR)/libtcl8.6.so
@@ -274,3 +274,26 @@ $(TKINTER_OUT)/_tkinter.so: $(CPYTHON_SRC)/_tkinter.c $(LIBDIR)/libtk8.6.so $(LI
 		$(LIBDIR)/libtk8.6.so $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libemx11.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0 \
 		-o $(TKINTER_OUT)/_tkinter.so
+
+# ---- libwacl.so --------------------------------------------------------
+# wacl-tk's ::wacl::dom and ::wacl::jscall Tcl commands, repackaged as a
+# Pyodide side module so Python tkinter code can drive the DOM straight
+# from Tcl (no `from js import …` round-trip). Source is the sibling
+# wacl-tk/opt/wacl.c -- single source of truth, no copy. The runtime
+# wires it up by ctypes-calling Wacl_Init(interp) on each tkinter.Tk()
+# (see worker.ts prelude).
+#
+# libtcl8.6.so is on the link line so Tcl_CreateNamespace etc. land on
+# libwacl.so's NEEDED entry; loadDynlib's flags=2 then auto-cascades.
+
+WACL_SRC = $(CURDIR)/../wacl-tk/opt/wacl.c
+
+$(LIBDIR)/libwacl.so: $(WACL_SRC) $(LIBDIR)/libtcl8.6.so
+	@test -f $(WACL_SRC) || \
+		(echo "wacl source missing at $(WACL_SRC) -- clone wacl-tk as a sibling dir"; exit 1)
+	mkdir -p $(LIBDIR)
+	emcc $(WASMEH) $(SIDE_CC) -sSIDE_MODULE=1 \
+		-I $(INCDIR) \
+		$(WACL_SRC) $(LIBDIR)/libtcl8.6.so \
+		-sERROR_ON_UNDEFINED_SYMBOLS=0 \
+		-o $(LIBDIR)/libwacl.so
