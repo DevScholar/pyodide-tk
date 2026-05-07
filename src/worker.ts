@@ -40,7 +40,7 @@ function note(...parts: unknown[]): void {
   post({ type: 'log', line });
 }
 
-let em: EmX11 | null = null;
+let emX11: EmX11 | null = null;
 let booted = false;
 
 ctx.addEventListener('message', (ev: MessageEvent<WorkerInboundMessage>) => {
@@ -66,22 +66,22 @@ ctx.addEventListener('message', (ev: MessageEvent<WorkerInboundMessage>) => {
 });
 
 function onMouse(m: MouseRelay): void {
-  if (!em) return;
+  if (!emX11) return;
   if (m.type === 'mousedown') {
-    em.display.inject.mouseDown({ x: m.x, y: m.y, button: m.button, modifiers: m.modifiers });
+    emX11.display.inject.mouseDown({ x: m.x, y: m.y, button: m.button, modifiers: m.modifiers });
   } else if (m.type === 'mouseup') {
-    em.display.inject.mouseUp({ x: m.x, y: m.y, button: m.button, modifiers: m.modifiers });
+    emX11.display.inject.mouseUp({ x: m.x, y: m.y, button: m.button, modifiers: m.modifiers });
   } else {
-    em.display.inject.mouseMove({ x: m.x, y: m.y, modifiers: m.modifiers });
+    emX11.display.inject.mouseMove({ x: m.x, y: m.y, modifiers: m.modifiers });
   }
 }
 
 function onKey(k: KeyRelay): void {
-  if (!em) return;
+  if (!emX11) return;
   if (k.type === 'keydown') {
-    em.display.inject.keyDown({ keysym: k.keysym, modifiers: k.modifiers, hasFocus: k.hasFocus });
+    emX11.display.inject.keyDown({ keysym: k.keysym, modifiers: k.modifiers, hasFocus: k.hasFocus });
   } else {
-    em.display.inject.keyUp({ keysym: k.keysym, modifiers: k.modifiers, hasFocus: k.hasFocus });
+    emX11.display.inject.keyUp({ keysym: k.keysym, modifiers: k.modifiers, hasFocus: k.hasFocus });
   }
 }
 
@@ -94,7 +94,7 @@ async function boot(
   // 1. Construct em-x11 BEFORE Pyodide loads libemx11.so -- the EM_JS
   //    bridges in libemx11 read globalThis.emX11 synchronously from
   //    each X call, and createEmX11 mirrors itself onto that slot.
-  em = await createEmX11({ canvas: surface, width, height });
+  emX11 = await createEmX11({ canvas: surface, width, height });
 
   // 2. Kick off ALL pyodide-tk asset downloads NOW, before we even import
   //    pyodide.mjs. The HTTP layer fetches them concurrently with Pyodide's
@@ -189,13 +189,13 @@ async function boot(
   //
   //     em-x11's public API doesn't yet expose this binding directly
   //     (it's specific to the Pyodide-loads-libemx11-itself flow), so
-  //     reach through em._host. TODO: lift this into a public method
-  //     such as em.dlopen('/usr/lib/libemx11.so') auto-binding the
+  //     reach through emX11._host. TODO: lift this into a public method
+  //     such as emX11.dlopen('/usr/lib/libemx11.so') auto-binding the
   //     resulting export table.
   const moduleSurface = makeSideModuleSurface(
     libemx11Exports as unknown as Record<string, (...args: unknown[]) => unknown>,
   );
-  em._host.connection.setDefaultModule(moduleSurface);
+  emX11._host.connection.setDefaultModule(moduleSurface);
 
   await py._api.loadDynlib('/lib/python3.14/site-packages/_tkinter.so', { global: false, allowUndefined: true });
 
