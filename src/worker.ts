@@ -96,20 +96,26 @@ async function boot(
   //    each X call, and createEmX11 mirrors itself onto that slot.
   emX11 = await createEmX11({ canvas: surface, width, height });
 
-  // 2. Kick off ALL pyodide-tk asset downloads NOW, before we even import
-  //    pyodide.mjs. The HTTP layer fetches them concurrently with Pyodide's
-  //    own pyodide.asm.wasm (~9 MB) + python_stdlib.zip downloads, instead
-  //    of waiting until loadPyodide() resolves. We bind ArrayBuffer
-  //    promises here and `await` them later when staging to MEMFS.
-  //    `<link rel="preload">` in index.html warms the connection earlier
-  //    still; this turns the cache hit into actual parallel transfer.
+  // 2. Kick off ALL pyodide-tk asset downloads AND the pyodide.mjs import
+  //    in one parallel group, before we await any of them. The HTTP layer
+  //    fetches everything concurrently with Pyodide's own pyodide.asm.wasm
+  //    (~9 MB) + python_stdlib.zip downloads (those start once we await
+  //    loadPyodide below). Including the dynamic import in this group --
+  //    rather than awaiting it after the fetches start -- lets the browser
+  //    begin downloading pyodide.mjs alongside the assets instead of after
+  //    the asset fetch() calls have all been issued. `<link rel="preload">`
+  //    in index.html warms the connection earlier still; this turns the
+  //    cache hit into actual parallel transfer.
   const fetchAB = (url: string): Promise<ArrayBuffer> =>
     fetch(url).then((r) => {
       if (!r.ok) throw new Error(`fetch ${url}: ${r.status}`);
       return r.arrayBuffer();
     });
   const A = '/pyodide-tk-assets';
+  const pyodideUrl = new URL('/pyodide/pyodide.mjs', ctx.location.origin).href;
+  const indexURL = new URL('/pyodide/', ctx.location.origin).href;
   const pending = {
+    pyodide:   import(/* @vite-ignore */ pyodideUrl),
     libtcl:    fetchAB(`${A}/lib/libtcl8.6.so`),
     libtk:     fetchAB(`${A}/lib/libtk8.6.so`),
     libemx11:  fetchAB(`${A}/lib/libemx11.so`),
@@ -124,9 +130,7 @@ async function boot(
   // 3. Load Pyodide. In a worker we still resolve URLs against the page
   //    origin (same as main-thread path). importScripts is gone in
   //    type=module workers; use dynamic import.
-  const pyodideUrl = new URL('/pyodide/pyodide.mjs', ctx.location.origin).href;
-  const indexURL = new URL('/pyodide/', ctx.location.origin).href;
-  const { loadPyodide } = await import(/* @vite-ignore */ pyodideUrl);
+  const { loadPyodide } = await pending.pyodide;
 
   const py = await loadPyodide({
     indexURL,
