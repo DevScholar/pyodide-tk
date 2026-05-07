@@ -2,7 +2,7 @@
 
 ⚠️ Early development. Expect breaking changes.
 
-Brings unmodified Python `tkinter` to [Pyodide](https://pyodide.org/) by shipping Tcl 8.6, Tk 8.6, [em-x11](https://github.com/DevScholar/em-x11), and CPython's `_tkinter` extension as Pyodide-loadable side modules. Standard desktop tkinter / turtle programs run in the browser and paint widgets to a canvas — no real X server, no source modifications.
+Run Tkinter with Python in the browser.
 
 ![tk-hello demo screenshot](./screenshots/tk-hello.png)
 
