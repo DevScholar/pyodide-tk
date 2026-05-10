@@ -1,8 +1,8 @@
 # pyodide-tk: Tcl/Tk + em-x11 as Pyodide-loadable side modules
 # Target: pyemscripten_2026_0 (Python 3.14, Emscripten 5.0.3, wasm-EH ABI)
 
-TCLVERSION ?= 8.6.6
-TKVERSION  ?= 8.6.6
+TCLVERSION ?= 8.6.15
+TKVERSION  ?= 8.6.15
 
 EMSCRIPTEN ?= $(HOME)/.local/lib/emsdk/upstream/emscripten
 
@@ -23,6 +23,7 @@ BUILD   = $(CURDIR)/build
 PREFIX  = $(BUILD)/install
 LIBDIR  = $(PREFIX)/lib
 INCDIR  = $(PREFIX)/include
+TKINTER_OUT = $(BUILD)/_tkinter
 
 TCL_TARBALL = tcl-core$(TCLVERSION)-src.tar.gz
 TCL_URL     = http://prdownloads.sourceforge.net/tcl/$(TCL_TARBALL)
@@ -42,9 +43,14 @@ LDFLAGS_X = $(WASMEH)
 # would be smaller but the export list for Tcl/Tk is huge.
 SIDE_LDFLAGS = -sSIDE_MODULE=1 $(WASMEH)
 
-.PHONY: all tclprep tkprep tkinter clean distclean toolcheck smoke-tcl libtcl-so
+.PHONY: all tclprep tkprep tkinter clean distclean toolcheck smoke-tcl libtcl-so stage
 
-all: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(LIBDIR)/libemx11.so $(LIBDIR)/libwacl.so
+all: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(LIBDIR)/libemx11.so $(LIBDIR)/libwacl.so $(TKINTER_OUT)/_tkinter.so stage
+
+# Stage built artefacts into public/ so the vite dev server picks them up.
+# Folded into `all` so a fresh clone -> `make` -> `pnpm dev` just works.
+stage: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(LIBDIR)/libemx11.so $(LIBDIR)/libwacl.so $(TKINTER_OUT)/_tkinter.so
+	bash $(CURDIR)/scripts/stage-assets.sh
 
 # smoke-tcl needs an alias because the recipe doesn't reference the .so by path.
 libtcl-so: $(LIBDIR)/libtcl8.6.so
@@ -77,6 +83,10 @@ $(BUILD)/tcl/unix/Makefile: $(BUILD)/tcl/unix/configure
 		--host=wasm32-unknown-emscripten \
 		--prefix=$(PREFIX) \
 		--disable-threads --disable-load --disable-shared \
+		ac_cv_have_intrinsic_cpuid=no \
+		ac_cv_func_strtoul=yes \
+		tcl_cv_strtoul_unbroken=ok \
+		tcl_cv_strstr_unbroken=ok \
 		CFLAGS="$(CFLAGS_X)" LDFLAGS="$(LDFLAGS_X)"
 	cd $(BUILD)/tcl/unix && sed -i 's/-O2//g' Makefile
 
@@ -95,11 +105,7 @@ $(LIBDIR)/libtcl8.6.a: $(BUILD)/tcl/unix/libtcl8.6.a
 
 # Relink the static archive into a Pyodide-style side module.
 # --whole-archive forces all object files in to keep public symbols.
-# strtod.o is dropped first: Tcl's configure flags emscripten's libc as
-# "buggy strtod" (false positive) and pulls a compat shim that collides
-# with the canonical fixstrtod.o under --whole-archive.
 $(LIBDIR)/libtcl8.6.so: $(LIBDIR)/libtcl8.6.a
-	emar d $(LIBDIR)/libtcl8.6.a strtod.o
 	emcc $(SIDE_LDFLAGS) -o $(LIBDIR)/libtcl8.6.so \
 		-Wl,--whole-archive $(LIBDIR)/libtcl8.6.a -Wl,--no-whole-archive
 
@@ -223,7 +229,6 @@ $(LIBDIR)/libemx11.so: $(EMX11_BUILD)/libemx11.a $(LIBDIR)/libtcl8.6.so
 # itself uses at runtime.
 
 CPYTHON_SRC = $(BUILD)/cpython-src
-TKINTER_OUT = $(BUILD)/_tkinter
 
 $(CPYTHON_SRC)/$(CPYTHON_TARBALL):
 	mkdir -p $(CPYTHON_SRC)

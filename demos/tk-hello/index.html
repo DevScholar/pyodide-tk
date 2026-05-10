@@ -48,19 +48,47 @@
 
     <!-- The Python you'd run on a desktop, unchanged. -->
     <script type="text/python" id="demo">
-import tkinter
+import tkinter as tk
 
-root = tkinter.Tk()
+root = tk.Tk()
 root.title("hello pyodide-tk")
 
-tkinter.Label(root, text="hello, pyodide-tk!").pack()
+tk.Label(root, text="Tk on WebAssembly",
+         font=("Helvetica", 14, "bold"), pady=6).pack(fill="x")
+tk.Frame(root, height=2, relief="sunken", bd=1).pack(fill="x", padx=8, pady=2)
 
-b = tkinter.Button(root, text="click me")
-def clicked(*_):
-    print("button clicked!")
-    b.config(text="clicked!")
-b.config(command=clicked)
-b.pack()
+# Row 1: multi-line text entry + Greet button -> output label
+row1 = tk.Frame(root)
+tk.Label(row1, text="Names:", width=8, anchor="ne").pack(side="left", padx=4, pady=6)
+entry = tk.Text(row1, width=24, height=4)
+entry.insert("end", "One\nTwo\nThree")
+entry.pack(side="left", padx=4, pady=6)
+
+def greet():
+    raw = entry.get("1.0", "end").strip()
+    if not raw:
+        out.config(text="Hello, World!")
+    else:
+        names = [s.strip() for s in raw.split("\n") if s.strip()]
+        out.config(text="Hello, " + ", ".join(names) + "!")
+
+tk.Button(row1, text="Greet", command=greet).pack(side="left", padx=4, pady=6)
+row1.pack()
+
+# Row 2: click counter
+clicks = tk.IntVar(value=0)
+row2 = tk.Frame(root)
+tk.Label(row2, text="Clicks:", width=8, anchor="e").pack(side="left", padx=4, pady=6)
+tk.Label(row2, textvariable=clicks, width=4, relief="sunken", anchor="e").pack(side="left", padx=4, pady=6)
+tk.Button(row2, text=" + ", command=lambda: clicks.set(clicks.get() + 1)).pack(side="left", padx=4, pady=6)
+tk.Button(row2, text=" - ",
+          command=lambda: clicks.set(max(0, clicks.get() - 1))).pack(side="left", padx=4, pady=6)
+tk.Button(row2, text="Reset", command=lambda: clicks.set(0)).pack(side="left", padx=4, pady=6)
+row2.pack()
+
+out = tk.Label(root, text="(press Greet)", relief="groove", bd=2,
+               padx=8, pady=4, width=32, wraplength=240, justify="left")
+out.pack(padx=12, pady=8)
 
 root.mainloop()
     </script>

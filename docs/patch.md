@@ -1,7 +1,7 @@
 # pyodide-tk patches against upstream Tcl/Tk and CPython
 
 This document describes how the source trees built by pyodide-tk
-diverge from the upstream Tcl 8.6.6, Tk 8.6.6, and CPython 3.14.2
+diverge from the upstream Tcl 8.6.15, Tk 8.6.15, and CPython 3.14.2
 releases.
 
 The short version: **pyodide-tk applies no source-level patches.**
@@ -15,8 +15,8 @@ deltas so they can be reproduced and audited.
 
 | Component        | Upstream                | Source patches | Build-level changes |
 |------------------|-------------------------|----------------|---------------------|
-| Tcl 8.6.6        | tcl-core8.6.6-src       | none           | wasm-EH ABI, side-module relink, `strtod.o` removal |
-| Tk 8.6.6         | tk8.6.6-src             | none           | em-x11 X11 headers, fontconfig disabled, `--disable-xss`, side-module relink |
+| Tcl 8.6.15       | tcl-core8.6.15-src      | none           | wasm-EH ABI, side-module relink, cross-compile cv overrides for strtoul/strstr/cpuid |
+| Tk 8.6.15        | tk8.6.15-src            | none           | em-x11 X11 headers, fontconfig disabled, `--disable-xss`, side-module relink |
 | CPython 3.14.2 `_tkinter` | Modules/_tkinter.c | none   | side-module compile against em-x11 + Pyodide xbuildenv `Python.h` |
 | em-x11           | sibling repo            | none           | rebuilt under wasm-EH `-fPIC`, relinked to `libemx11.so` with NEEDED entry |
 | `::wacl::*` cmds | `../wacl-tk/opt/wacl.c` | none           | sibling source compiled as `libwacl.so` side module; `Wacl_Init(interp)` invoked via ctypes on every `tkinter.Tk()` |
@@ -27,7 +27,9 @@ pyodide-tk did not need that patch because its targets differ:
 
 - Pyodide ships a known-good emscripten libc, so the `strstr` /
   `strtoul` / `strtod` runtime probes that wacl deletes are bypassed
-  via `cross_compiling=yes` instead.
+  via `cross_compiling=yes` plus the same
+  `tcl_cv_str{toul,str}_unbroken=ok` / `ac_cv_func_strtoul=yes`
+  cv overrides wacl-tk uses, instead of patching the source.
 - The `tclUnixChan.c` / `tclUnixNotfy.c` `exceptfds` assertion that
   wacl works around does not fire in the wasm-EH build path used
   here, since the notifier we end up using is em-x11's, not Tcl's
@@ -36,9 +38,9 @@ pyodide-tk did not need that patch because its targets differ:
   composes side modules at dlopen time, so the wacl `opt/wacl.c`
   injection point is unnecessary.
 
-## Tcl 8.6.6 (build-level only)
+## Tcl 8.6.15 (build-level only)
 
-Source: `wget` of `tcl-core8.6.6-src.tar.gz`, extracted under
+Source: `wget` of `tcl-core8.6.15-src.tar.gz`, extracted under
 `build/tcl/`. No `patch` step.
 
 ### Configure
@@ -47,6 +49,10 @@ emconfigure ./configure \
     --host=wasm32-unknown-emscripten \
     --prefix=$(PREFIX) \
     --disable-threads --disable-load --disable-shared \
+    ac_cv_have_intrinsic_cpuid=no \
+    ac_cv_func_strtoul=yes \
+    tcl_cv_strtoul_unbroken=ok \
+    tcl_cv_strstr_unbroken=ok \
     CFLAGS="-Oz -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -fPIC" \
     LDFLAGS="-fwasm-exceptions -sSUPPORT_LONGJMP=wasm"
 ```
@@ -58,33 +64,33 @@ Key choices:
 - `-fPIC` is mandatory for `-sSIDE_MODULE=1` relink.
 - `--disable-threads --disable-load --disable-shared` — same
   rationale as wacl-tk.
+- `ac_cv_have_intrinsic_cpuid=no` — wasm32 has no GNU/x86 cpuid
+  intrinsic; preempt the feature probe.
+- `ac_cv_func_strtoul=yes` and
+  `tcl_cv_str{toul,str}_unbroken=ok` — Tcl 8.6.15 ships
+  `compat/str{toul,str}.c` and the cross-compile path defaults the
+  unbroken-func cv vars to "unknown" (treated as broken). Without
+  these overrides Tcl bundles its own copies and wasm-ld errors
+  with "duplicate symbol" against emscripten libc at side-module
+  link time.
 
 Post-configure sed strips `-O2` so it does not override `-Oz`.
 
 ### Side-module relink
 The static archive is then relinked as a Pyodide side module:
 ```
-emar d $(LIBDIR)/libtcl8.6.a strtod.o
 emcc -sSIDE_MODULE=1 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm \
     -o libtcl8.6.so \
     -Wl,--whole-archive libtcl8.6.a -Wl,--no-whole-archive
 ```
-Two non-obvious bits:
-- `--whole-archive` is required because `libtcl` exports many
-  symbols (`Tcl_Eval`, `Tcl_NewObj`, …) that no static caller
-  references at link time — without this flag, the linker drops
-  most of the archive.
-- **`emar d … strtod.o`** removes the Tcl-supplied `strtod`
-  replacement before the relink. Tcl's `configure` flags
-  emscripten's libc as having a "buggy strtod" (a false positive in
-  the cross-compile) and substitutes `compat/strtod.c`. Under
-  `--whole-archive` this collides with `tclStrToD.c`'s canonical
-  `TclStrToD`/`fixstrtod` symbols. Dropping the `strtod.o` object
-  lets the canonical implementation through.
+`--whole-archive` is required because `libtcl` exports many
+symbols (`Tcl_Eval`, `Tcl_NewObj`, …) that no static caller
+references at link time — without this flag, the linker drops
+most of the archive.
 
-## Tk 8.6.6 (build-level only)
+## Tk 8.6.15 (build-level only)
 
-Source: `wget` of `tk8.6.6-src.tar.gz`, extracted under
+Source: `wget` of `tk8.6.15-src.tar.gz`, extracted under
 `build/tk/`. No `patch` step.
 
 ### Configure
