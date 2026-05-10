@@ -24,6 +24,7 @@ import type {
   WorkerOutboundMessage,
   MouseRelay,
   KeyRelay,
+  TextKeyRelay,
 } from './worker-protocol.js';
 
 const ctx: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
@@ -31,13 +32,6 @@ const ctx: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobal
 function post(msg: WorkerOutboundMessage, transfer?: Transferable[]): void {
   if (transfer && transfer.length) ctx.postMessage(msg, transfer);
   else ctx.postMessage(msg);
-}
-
-function note(...parts: unknown[]): void {
-  const line = parts
-    .map((p) => (typeof p === 'string' ? p : JSON.stringify(p)))
-    .join(' ');
-  post({ type: 'log', line });
 }
 
 let emX11: EmX11 | null = null;
@@ -62,6 +56,9 @@ ctx.addEventListener('message', (ev: MessageEvent<WorkerInboundMessage>) => {
     case 'keyup':
       onKey(msg);
       break;
+    case 'textKey':
+      onTextKey(msg);
+      break;
   }
 });
 
@@ -79,10 +76,15 @@ function onMouse(m: MouseRelay): void {
 function onKey(k: KeyRelay): void {
   if (!emX11) return;
   if (k.type === 'keydown') {
-    emX11.display.inject.keyDown({ keysym: k.keysym, modifiers: k.modifiers, hasFocus: k.hasFocus });
+    emX11.display.inject.keyDown({ keysym: k.keysym, modifiers: k.modifiers, hasFocus: k.hasFocus, text: k.text });
   } else {
-    emX11.display.inject.keyUp({ keysym: k.keysym, modifiers: k.modifiers, hasFocus: k.hasFocus });
+    emX11.display.inject.keyUp({ keysym: k.keysym, modifiers: k.modifiers, hasFocus: k.hasFocus, text: k.text });
   }
+}
+
+function onTextKey(t: TextKeyRelay): void {
+  if (!emX11 || !t.text) return;
+  emX11.display.inject.textKey(t.text);
 }
 
 async function boot(
@@ -94,7 +96,25 @@ async function boot(
   // 1. Construct em-x11 BEFORE Pyodide loads libemx11.so -- the EM_JS
   //    bridges in libemx11 read globalThis.emX11 synchronously from
   //    each X call, and createEmX11 mirrors itself onto that slot.
-  emX11 = await createEmX11({ canvas: surface, width, height });
+  //
+  //    textInputRemote: forward XSetICFocus / Tk_SetCaretPos commands
+  //    to main, which owns the hidden <textarea> the OS IME anchors to.
+  //    Without this the worker's TextInputOverlay no-ops (no DOM in a
+  //    worker realm) and the OS IME has no anchor element -- shift can't
+  //    flip Chinese/English, no candidate window appears.
+  emX11 = await createEmX11({
+    canvas: surface,
+    width,
+    height,
+    textInputRemote: {
+      setFocus: (window) => post({ type: 'imeFocus', window }),
+      clearFocus: () => post({ type: 'imeClearFocus' }),
+      setSpot: (window, spotX, spotY) =>
+        post({ type: 'imeSpot', window, spotX, spotY }),
+      positionHint: (absX, absY) =>
+        post({ type: 'imePositionHint', absX, absY }),
+    },
+  });
 
   // 2. Kick off ALL pyodide-tk asset downloads AND the pyodide.mjs import
   //    in one parallel group, before we await any of them. The HTTP layer
@@ -198,6 +218,12 @@ async function boot(
   //     resulting export table.
   const moduleSurface = makeSideModuleSurface(
     libemx11Exports as unknown as Record<string, (...args: unknown[]) => unknown>,
+    py._module as unknown as {
+      _malloc(size: number): number;
+      _free(ptr: number): void;
+      stringToUTF8(str: string, ptr: number, max: number): void;
+      lengthBytesUTF8(str: string): number;
+    },
   );
   emX11._host.connection.setDefaultModule(moduleSurface);
 
@@ -287,28 +313,33 @@ def _emx11_yielding_after(self, ms, func=None, *args):
     return _emx11_orig_after(self, ms, func, *args)
 tkinter.Misc.after = _emx11_yielding_after
 
-async def _emx11_async_mainloop_for(root):
-    while True:
-        n = 0
-        while n < 256:
-            try:
-                more = root.tk.dooneevent(2)
-            except Exception:
-                return
-            if not more:
-                break
-            n += 1
-        await _emx11_yield_frame()
-
+# Misc.mainloop / tkinter.mainloop replacement.
+#
+# Why not run an asyncio-based event loop here:
+#
+#    Pyodide's WebLoop wakes via MessageChannel.postMessage, and JSPI
+#    resume re-enters wasm through _pyproxy_apply_promising. Each
+#    iteration of an async loop that registers a setTimeout-backed
+#    future stacks one more JSPI resume frame on the V8 native stack
+#    before the previous one fully unwinds (Chrome treats the
+#    MessageChannel callback as a microtask-ish continuation, not a
+#    fresh task). Tk keypress handlers fire many short Tcl callbacks,
+#    so a few seconds of typing is enough to exhaust the 5 MB native
+#    stack -- the Pyodide RecursionError "in comparison" out of
+#    webloop.call_later is the symptom.
+#
+# Standard desktop tkinter code ends with root.mainloop() (or
+# turtle.done() which calls tkinter.mainloop()). We just need that
+# call to return so runPythonAsync() resolves -- the JS-side
+# setTimeout(pump, 8) loop in worker.ts then drives Tcl_DoOneEvent at
+# a steady ~125 Hz, which is enough for entries, animations, and
+# turtle. No JSPI suspends per tick, no stack accumulation.
 def _emx11_misc_mainloop(self, n=0):
-    run_sync(_emx11_async_mainloop_for(self))
+    return None
 tkinter.Misc.mainloop = _emx11_misc_mainloop
 
 def _emx11_module_mainloop(n=0):
-    root = tkinter._default_root
-    if root is None:
-        return
-    run_sync(_emx11_async_mainloop_for(root))
+    return None
 tkinter.mainloop = _emx11_module_mainloop
 `);
 
