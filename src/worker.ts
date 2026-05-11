@@ -85,6 +85,7 @@ function onKey(k: KeyRelay): void {
     emX11.display.inject.keyUp({ keysym: k.keysym, modifiers: k.modifiers, hasFocus: k.hasFocus, text: k.text });
   }
 }
+}
 
 function onTextKey(t: TextKeyRelay): void {
   if (!emX11 || !t.text) return;
@@ -428,12 +429,16 @@ tkinter.mainloop = _emx11_module_mainloop
    * / `turtle.Screen()` both set _default_root automatically.
    */
   py.runPython(`
+import js as _js
 def _emx11_drain(max_n=256):
     root = tkinter._default_root
     if root is None:
         return 0
     n = 0
-    while n < max_n and root.tk.dooneevent(2):
+    while n < max_n:
+        got = root.tk.dooneevent(2)
+        if not got:
+            break
         n += 1
     return n
 `);
