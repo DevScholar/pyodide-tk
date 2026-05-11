@@ -1,10 +1,21 @@
-// Headless ABI smoke: load all 4 side modules into Pyodide and import _tkinter.
+// Headless ABI smoke: load all side modules into Pyodide and import _tkinter.
 import { loadPyodide } from "pyodide";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 
-const ASSETS = "/mnt/c/amateur-programming/wasm-tcl-series/pyodide-tk/public/pyodide-tk-assets";
+// Locate the staged-assets dir relative to this file rather than a
+// fixed /mnt/c/... path. Smoke now runs on any developer machine and
+// in CI without edits.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ASSETS = path.resolve(__dirname, "../../public/pyodide-tk-assets");
 const LIBDIR = `${ASSETS}/lib`;
+
+if (!fs.existsSync(LIBDIR)) {
+  console.error(`smoke: missing ${LIBDIR}`);
+  console.error("Run 'pnpm run stage-assets' from pyodide-tk/ first.");
+  process.exit(1);
+}
 
 (async () => {
   const py = await loadPyodide({
@@ -28,6 +39,12 @@ const LIBDIR = `${ASSETS}/lib`;
   stage(`${LIBDIR}/libemx11.so`,  `${LDDIR}/libemx11.so`);
   stage(`${LIBDIR}/libtk8.6.so`,  `${LDDIR}/libtk8.6.so`);
   stage(`${LIBDIR}/_tkinter.so`,  "/lib/python3.14/site-packages/_tkinter.so");
+  // libwacl is optional (sibling wacl-tk might not be built). Staging it
+  // when present keeps smoke aligned with worker.ts's real boot path so
+  // ABI drifts in ::wacl::dom / ::wacl::jscall surface here too.
+  const libwaclPath = `${LIBDIR}/libwacl.so`;
+  const hasWacl = fs.existsSync(libwaclPath);
+  if (hasWacl) stage(libwaclPath, `${LDDIR}/libwacl.so`);
 
   // Script libraries: same tar+unpackArchive path the worker uses (~30x
   // faster than per-file FS.writeFile and exercises the prod load path).
@@ -51,6 +68,9 @@ const LIBDIR = `${ASSETS}/lib`;
     [`${LDDIR}/libemx11.so`,                       { global: true, allowUndefined: true }],
     ["/lib/python3.14/site-packages/_tkinter.so",  { global: false, allowUndefined: true }],
   ];
+  if (hasWacl) {
+    order.push([`${LDDIR}/libwacl.so`, { global: true, allowUndefined: true }]);
+  }
   for (const [p, opts] of order) {
     process.stdout.write(`loadDynlib ${path.basename(p)} ... `);
     try {

@@ -34,6 +34,10 @@ function post(msg: WorkerOutboundMessage, transfer?: Transferable[]): void {
   else ctx.postMessage(msg);
 }
 
+function logToMain(line: string): void {
+  post({ type: 'log', line });
+}
+
 let emX11: EmX11 | null = null;
 let booted = false;
 
@@ -87,21 +91,71 @@ function onTextKey(t: TextKeyRelay): void {
   emX11.display.inject.textKey(t.text);
 }
 
+/* -------------------------------------------------------------------------
+ * Pyodide private-API surface
+ *
+ * Pyodide does not yet expose `loadDynlib`, the in-memory exports table
+ * (`_module.LDSO.loadedLibsByName`), or memory marshalling helpers
+ * (`_malloc`/`stringToUTF8`) on its public surface. We need all three to
+ * stand up libemx11/_tkinter and to bind libemx11's exports as the
+ * em-x11 default module before _tkinter loads.
+ *
+ * Concentrating the casts here keeps the rest of boot() typed against
+ * named local types -- when Pyodide adds public APIs (or renames the
+ * internal slots in a minor release), this is the only block that needs
+ * to move.
+ * ------------------------------------------------------------------------- */
+
+interface DynlibLoader {
+  loadDynlib(path: string, opts: { global?: boolean; allowUndefined?: boolean }): Promise<void>;
+}
+interface PyMemorySurface {
+  _malloc(size: number): number;
+  _free(ptr: number): void;
+  stringToUTF8(str: string, ptr: number, max: number): void;
+  lengthBytesUTF8(str: string): number;
+  LDSO: {
+    loadedLibsByName: Record<string, { exports?: Record<string, unknown> } | undefined>;
+  };
+}
+interface PyodideInternals {
+  loadDynlib(path: string, opts?: { global?: boolean; allowUndefined?: boolean }): Promise<void>;
+  loadedLibExports(path: string): Record<string, unknown> | undefined;
+  memorySurface(): PyMemorySurface;
+}
+
+function pyodideInternals(py: unknown): PyodideInternals {
+  const anyPy = py as { _api: DynlibLoader; _module: PyMemorySurface };
+  return {
+    loadDynlib(path, opts = {}) {
+      return anyPy._api.loadDynlib(path, { allowUndefined: true, ...opts });
+    },
+    loadedLibExports(path) {
+      return anyPy._module.LDSO.loadedLibsByName[path]?.exports;
+    },
+    memorySurface() {
+      return anyPy._module;
+    },
+  };
+}
+
 async function boot(
   surface: OffscreenCanvas,
   width: number,
   height: number,
   demoCode: string,
 ): Promise<void> {
-  // 1. Construct em-x11 BEFORE Pyodide loads libemx11.so -- the EM_JS
-  //    bridges in libemx11 read globalThis.emX11 synchronously from
-  //    each X call, and createEmX11 mirrors itself onto that slot.
-  //
-  //    textInputRemote: forward XSetICFocus / Tk_SetCaretPos commands
-  //    to main, which owns the hidden <textarea> the OS IME anchors to.
-  //    Without this the worker's TextInputOverlay no-ops (no DOM in a
-  //    worker realm) and the OS IME has no anchor element -- shift can't
-  //    flip Chinese/English, no candidate window appears.
+  /* --- Stage: em-x11 host (must precede libemx11.so dlopen) ---
+   *
+   * The EM_JS bridges in libemx11 read globalThis.emX11 synchronously
+   * from each X call, and createEmX11 mirrors itself onto that slot.
+   *
+   * textInputRemote: forward XSetICFocus / Tk_SetCaretPos commands
+   * to main, which owns the hidden <textarea> the OS IME anchors to.
+   * Without this the worker's TextInputOverlay no-ops (no DOM in a
+   * worker realm) and the OS IME has no anchor element -- shift can't
+   * flip Chinese/English, no candidate window appears.
+   */
   emX11 = await createEmX11({
     canvas: surface,
     width,
@@ -116,18 +170,27 @@ async function boot(
     },
   });
 
-  // 2. Kick off ALL pyodide-tk asset downloads AND the pyodide.mjs import
-  //    in one parallel group, before we await any of them. The HTTP layer
-  //    fetches everything concurrently with Pyodide's own pyodide.asm.wasm
-  //    (~9 MB) + python_stdlib.zip downloads (those start once we await
-  //    loadPyodide below). Including the dynamic import in this group --
-  //    rather than awaiting it after the fetches start -- lets the browser
-  //    begin downloading pyodide.mjs alongside the assets instead of after
-  //    the asset fetch() calls have all been issued. `<link rel="preload">`
-  //    in index.html warms the connection earlier still; this turns the
-  //    cache hit into actual parallel transfer.
+  /* --- Stage: parallel asset prefetch + pyodide.mjs import ---
+   *
+   * Kick off ALL pyodide-tk asset downloads AND the pyodide.mjs import
+   * in one parallel group, before we await any of them. The HTTP layer
+   * fetches everything concurrently with Pyodide's own pyodide.asm.wasm
+   * (~9 MB) + python_stdlib.zip downloads (those start once we await
+   * loadPyodide below). Including the dynamic import in this group --
+   * rather than awaiting it after the fetches start -- lets the browser
+   * begin downloading pyodide.mjs alongside the assets instead of after
+   * the asset fetch() calls have all been issued. `<link rel="preload">`
+   * in index.html warms the connection earlier still; this turns the
+   * cache hit into actual parallel transfer.
+   */
   const fetchAB = (url: string): Promise<ArrayBuffer> =>
     fetch(url).then((r) => {
+      if (!r.ok) throw new Error(`fetch ${url}: ${r.status}`);
+      return r.arrayBuffer();
+    });
+  const fetchOptional = (url: string): Promise<ArrayBuffer | null> =>
+    fetch(url).then((r) => {
+      if (r.status === 404) return null;
       if (!r.ok) throw new Error(`fetch ${url}: ${r.status}`);
       return r.arrayBuffer();
     });
@@ -139,7 +202,7 @@ async function boot(
     libtcl:    fetchAB(`${A}/lib/libtcl8.6.so`),
     libtk:     fetchAB(`${A}/lib/libtk8.6.so`),
     libemx11:  fetchAB(`${A}/lib/libemx11.so`),
-    libwacl:   fetchAB(`${A}/lib/libwacl.so`).catch(() => null),
+    libwacl:   fetchOptional(`${A}/lib/libwacl.so`),
     tkinterSo: fetchAB(`${A}/lib/_tkinter.so`),
     turtle:    fetchAB(`${A}/turtle.py`),
     tclLib:    fetchAB(`${A}/tcl-library.tar`),
@@ -147,9 +210,12 @@ async function boot(
     tkinterTar:fetchAB(`${A}/tkinter.tar`),
   };
 
-  // 3. Load Pyodide. In a worker we still resolve URLs against the page
-  //    origin (same as main-thread path). importScripts is gone in
-  //    type=module workers; use dynamic import.
+  /* --- Stage: load Pyodide ---
+   *
+   * In a worker we still resolve URLs against the page origin (same as
+   * main-thread path). importScripts is gone in type=module workers;
+   * use dynamic import.
+   */
   const { loadPyodide } = await pending.pyodide;
 
   const py = await loadPyodide({
@@ -160,118 +226,131 @@ async function boot(
       DISPLAY: ':0',
       HOME: '/home/pyodide',
     },
+    /* Surface Python stderr (and traceback output) to main so it lands in
+     * the harness log instead of the worker's hidden console. We don't
+     * redirect stdout -- demo print() noise stays in DevTools. */
+    stderr: (line: string) => logToMain(line),
   });
+  const pyi = pyodideInternals(py);
 
-  // 4. Stage the prefetched bytes into Pyodide's MEMFS. .so files +
-  //    turtle.py go via FS.writeFile; the tcl/tk/tkinter trees ship as
-  //    one .tar each and are extracted via py.unpackArchive (in C, ~30x
-  //    faster than 1000+ per-file FS.writeFile round-trips).
+  /* --- Stage: stage prefetched bytes into MEMFS ---
+   *
+   * .so files + turtle.py go via FS.writeFile; the tcl/tk/tkinter trees
+   * ship as one .tar each and are extracted via py.unpackArchive (in C,
+   * ~30x faster than 1000+ per-file FS.writeFile round-trips).
+   *
+   * Wait for all asset arrivals together before issuing the writes; the
+   * write order itself is fixed, but the network fetches are independent.
+   */
   py.FS.mkdirTree('/usr/lib');
   py.FS.mkdirTree('/lib/python3.14/site-packages');
+  const [
+    libtclBuf, libtkBuf, libemx11Buf, libwaclBuf, tkinterSoBuf,
+    turtleBuf, tclLibBuf, tkLibBuf, tkinterTarBuf,
+  ] = await Promise.all([
+    pending.libtcl, pending.libtk, pending.libemx11, pending.libwacl, pending.tkinterSo,
+    pending.turtle, pending.tclLib, pending.tkLib, pending.tkinterTar,
+  ]);
   const writeFromBuf = (buf: ArrayBuffer, memPath: string): void => {
     py.FS.writeFile(memPath, new Uint8Array(buf));
   };
-  writeFromBuf(await pending.libtcl,    '/usr/lib/libtcl8.6.so');
-  writeFromBuf(await pending.libtk,     '/usr/lib/libtk8.6.so');
-  writeFromBuf(await pending.libemx11,  '/usr/lib/libemx11.so');
-  const libwaclBuf = await pending.libwacl;
+  writeFromBuf(libtclBuf,    '/usr/lib/libtcl8.6.so');
+  writeFromBuf(libtkBuf,     '/usr/lib/libtk8.6.so');
+  writeFromBuf(libemx11Buf,  '/usr/lib/libemx11.so');
   if (libwaclBuf) writeFromBuf(libwaclBuf, '/usr/lib/libwacl.so');
-  writeFromBuf(await pending.tkinterSo, '/lib/python3.14/site-packages/_tkinter.so');
-  // turtle is a single-file stdlib module that imports tkinter; Pyodide
-  // strips it from python_stdlib.zip alongside tkinter, so we stage the
-  // CPython source copy next to _tkinter.so. Cheap (~150 KB) and lets
-  // any demo `import turtle` regardless of whether it uses it.
-  writeFromBuf(await pending.turtle,    '/lib/python3.14/site-packages/turtle.py');
+  writeFromBuf(tkinterSoBuf, '/lib/python3.14/site-packages/_tkinter.so');
+  /* turtle is a single-file stdlib module that imports tkinter; Pyodide
+   * strips it from python_stdlib.zip alongside tkinter, so we stage the
+   * CPython source copy next to _tkinter.so. Cheap (~150 KB) and lets
+   * any demo `import turtle` regardless of whether it uses it. */
+  writeFromBuf(turtleBuf,    '/lib/python3.14/site-packages/turtle.py');
 
   py.FS.mkdirTree('/usr/lib/tcl8.6');
   py.FS.mkdirTree('/usr/lib/tk8.6');
   py.FS.mkdirTree('/lib/python3.14/site-packages/tkinter');
-  py.unpackArchive(await pending.tclLib,     'tar', { extractDir: '/usr/lib/tcl8.6' });
-  py.unpackArchive(await pending.tkLib,      'tar', { extractDir: '/usr/lib/tk8.6' });
-  py.unpackArchive(await pending.tkinterTar, 'tar', { extractDir: '/lib/python3.14/site-packages/tkinter' });
+  py.unpackArchive(tclLibBuf,     'tar', { extractDir: '/usr/lib/tcl8.6' });
+  py.unpackArchive(tkLibBuf,      'tar', { extractDir: '/usr/lib/tk8.6' });
+  py.unpackArchive(tkinterTarBuf, 'tar', { extractDir: '/lib/python3.14/site-packages/tkinter' });
 
-  // 5. Load side modules. libemx11 is the bridge entry point -- nothing
-  //    else NEEDs it, so load manually. Loading it pulls libtcl via
-  //    libemx11's NEEDED entry (see Makefile $(LIBDIR)/libemx11.so step).
-  //    _tkinter then pulls libtk via NEEDED, and libtk's Xlib refs
-  //    resolve against the already-loaded libemx11.
-  await py._api.loadDynlib('/usr/lib/libemx11.so', { global: true, allowUndefined: true });
+  /* --- Stage: load libemx11 + bind it as default module ---
+   *
+   * libemx11 is the bridge entry point -- nothing else NEEDs it, so
+   * load manually. Loading it pulls libtcl via libemx11's NEEDED entry
+   * (see Makefile $(LIBDIR)/libemx11.so step). _tkinter then pulls
+   * libtk via NEEDED, and libtk's Xlib refs resolve against the
+   * already-loaded libemx11.
+   */
+  await pyi.loadDynlib('/usr/lib/libemx11.so', { global: true });
 
-  // 4b. Install browser-friendly Tcl notifier BEFORE Tk_Init runs.
-  const libemx11Exports = py._module.LDSO.loadedLibsByName['/usr/lib/libemx11.so']?.exports;
+  /* Browser-friendly Tcl notifier must be installed BEFORE Tk_Init. */
+  const libemx11Exports = pyi.loadedLibExports('/usr/lib/libemx11.so');
   if (!libemx11Exports?.emx11_install_browser_notifier) {
     throw new Error('emx11_install_browser_notifier not found in libemx11 exports');
   }
   (libemx11Exports.emx11_install_browser_notifier as () => void)();
 
-  // 4c. Pre-bind libemx11's exports as the default module for ANY
-  //     future XOpenDisplay. Doing this BEFORE _tkinter loads means
-  //     tkinter.Tk()'s very first XOpenDisplay picks up the surface
-  //     automatically -- we don't need a manual `_tkinter.create`
-  //     bootstrap call (which would create a second redundant Tk root
-  //     that ends up obscuring the real widgets).
-  //
-  //     em-x11's public API doesn't yet expose this binding directly
-  //     (it's specific to the Pyodide-loads-libemx11-itself flow), so
-  //     reach through emX11._host. TODO: lift this into a public method
-  //     such as emX11.dlopen('/usr/lib/libemx11.so') auto-binding the
-  //     resulting export table.
+  /* Pre-bind libemx11's exports as the default module for ANY future
+   * XOpenDisplay. Doing this BEFORE _tkinter loads means tkinter.Tk()'s
+   * very first XOpenDisplay picks up the surface automatically -- we
+   * don't need a manual `_tkinter.create` bootstrap call (which would
+   * create a second redundant Tk root that ends up obscuring the real
+   * widgets).
+   *
+   * em-x11's public API doesn't yet expose this binding directly (it's
+   * specific to the Pyodide-loads-libemx11-itself flow), so reach
+   * through emX11._host. TODO: lift this into a public method such as
+   * emX11.dlopen('/usr/lib/libemx11.so') auto-binding the resulting
+   * export table.
+   */
   const moduleSurface = makeSideModuleSurface(
     libemx11Exports as unknown as Record<string, (...args: unknown[]) => unknown>,
-    py._module as unknown as {
-      _malloc(size: number): number;
-      _free(ptr: number): void;
-      stringToUTF8(str: string, ptr: number, max: number): void;
-      lengthBytesUTF8(str: string): number;
-    },
+    pyi.memorySurface(),
   );
   emX11._host.connection.setDefaultModule(moduleSurface);
 
-  await py._api.loadDynlib('/lib/python3.14/site-packages/_tkinter.so', { global: false, allowUndefined: true });
+  await pyi.loadDynlib('/lib/python3.14/site-packages/_tkinter.so', { global: false });
 
-  // 4d. libwacl: ::wacl::dom and ::wacl::jscall Tcl commands. Loaded
-  //     globally so its Wacl_Init export is reachable via ctypes.CDLL.
-  //     Optional -- if the .so is missing (sibling wacl-tk not built),
-  //     we skip silently and the prelude below no-ops.
+  /* libwacl: ::wacl::dom and ::wacl::jscall Tcl commands. Loaded
+   * globally so its Wacl_Init export is reachable via ctypes.CDLL.
+   * Optional -- if the .so is missing (sibling wacl-tk not built),
+   * we skip silently and the prelude below no-ops. */
   if (libwaclBuf) {
-    await py._api.loadDynlib('/usr/lib/libwacl.so', { global: true, allowUndefined: true });
+    await pyi.loadDynlib('/usr/lib/libwacl.so', { global: true });
   }
 
-  // 5. Worker-side prelude.
-  //
-  //    Patch 1 -- tkinter.Misc.after(ms) sync sleep:
-  //    The no-callback variant of Misc.after lowers to Tcl's sync
-  //    `after delay`, which busy-loops Tcl_DoOneEvent under wallclock
-  //    until the time elapses. libemx11/libtcl/libtk are built without
-  //    Asyncify (Pyodide 314 uses JSPI instead) so emscripten_sleep(1)
-  //    inside em-x11's notifier resolves to a no-op stub. Without a
-  //    yield, turtle's per-step _cv.after(delay) burns ~7s of CPU
-  //    while painting nothing. Routing the sync-sleep branch through
-  //    pyodide.ffi.run_sync(asyncio.sleep(...)) suspends the wasm stack
-  //    via JSPI, the JS event loop runs (browser composites a frame),
-  //    then resumes -- exactly the yielding semantics turtle needs.
-  //    Misc.after-with-callback paths fall through unchanged.
-  //
-  //    Patch 2 -- Misc.mainloop / tkinter.mainloop JSPI loop:
-  //    Standard desktop tkinter / turtle code ends with `root.mainloop()`
-  //    or `turtle.done()` (which calls `tkinter.mainloop()`). The C
-  //    Tkapp_MainLoop calls Tcl_DoOneEvent(0) in a tight loop with no
-  //    yield to JS, so the browser never composites and the worker is
-  //    wedged. Replace both entry points with an async loop that drains
-  //    via dooneevent(2) (TCL_DONT_WAIT) and yields a frame between
-  //    batches via JSPI run_sync. Loop exits naturally when the interp
-  //    is deleted (root.destroy()), at which point tk.dooneevent raises.
-  //
-  //    Note: we deliberately do NOT patch Misc.update / Misc.update_idletasks
-  //    to yield. Those are "flush pending events" not "show now" -- the
-  //    next yield (a Misc.after sleep, or mainloop's batch yield) will
-  //    composite the post-update state. Yielding inside update() makes
-  //    turtle's _Screen.setup() show its default-sized scroll area for
-  //    a frame before the geometry resize lands.
-  //
-  //    Standard turtle / tkinter / user code stays untouched -- we
-  //    only patch the C-extension Python wrappers, here in the worker
-  //    prelude.
+  /* --- Stage: worker-side Python prelude ---
+   *
+   * Patch -- tkinter.Misc.after(ms) sync sleep:
+   * The no-callback variant of Misc.after lowers to Tcl's sync
+   * `after delay`, which busy-loops Tcl_DoOneEvent under wallclock
+   * until the time elapses. libemx11/libtcl/libtk are built without
+   * Asyncify (Pyodide 314 uses JSPI instead) so emscripten_sleep(1)
+   * inside em-x11's notifier resolves to a no-op stub. Without a
+   * yield, turtle's per-step _cv.after(delay) burns ~7s of CPU
+   * while painting nothing. Routing the sync-sleep branch through
+   * pyodide.ffi.run_sync(asyncio.sleep(...)) suspends the wasm stack
+   * via JSPI, the JS event loop runs (browser composites a frame),
+   * then resumes -- exactly the yielding semantics turtle needs.
+   * Misc.after-with-callback paths fall through unchanged.
+   *
+   * Patch -- Misc.mainloop / tkinter.mainloop:
+   * Standard desktop tkinter / turtle code ends with `root.mainloop()`
+   * or `turtle.done()` (which calls `tkinter.mainloop()`). The C
+   * Tkapp_MainLoop calls Tcl_DoOneEvent(0) in a tight loop with no
+   * yield to JS, so the browser never composites and the worker is
+   * wedged. Make both entry points return immediately; the JS-side
+   * setTimeout pump below drives Tcl_DoOneEvent at a steady ~125 Hz,
+   * which is enough for entries, animations, and turtle. No JSPI
+   * suspends per tick, no native-stack accumulation (see the
+   * project_pyodide_tk_jspi_stack memory).
+   *
+   * Note: we deliberately do NOT patch Misc.update / Misc.update_idletasks
+   * to yield. Those are "flush pending events" not "show now" -- the
+   * next yield (a Misc.after sleep, or mainloop's batch yield) will
+   * composite the post-update state. Yielding inside update() makes
+   * turtle's _Screen.setup() show its default-sized scroll area for
+   * a frame before the geometry resize lands.
+   */
   await py.runPythonAsync(`
 import tkinter, asyncio, js, ctypes
 from pyodide.ffi import run_sync, create_once_callable
@@ -292,7 +371,8 @@ try:
         try:
             _wacl.Wacl_Init(self.tk.interpaddr())
         except Exception as e:
-            print('wacl: Wacl_Init failed:', e)
+            import sys
+            print('wacl: Wacl_Init failed:', e, file=sys.stderr)
     tkinter.Tk.__init__ = _wacl_install_on_tk
 except OSError:
     pass
@@ -313,27 +393,6 @@ def _emx11_yielding_after(self, ms, func=None, *args):
     return _emx11_orig_after(self, ms, func, *args)
 tkinter.Misc.after = _emx11_yielding_after
 
-# Misc.mainloop / tkinter.mainloop replacement.
-#
-# Why not run an asyncio-based event loop here:
-#
-#    Pyodide's WebLoop wakes via MessageChannel.postMessage, and JSPI
-#    resume re-enters wasm through _pyproxy_apply_promising. Each
-#    iteration of an async loop that registers a setTimeout-backed
-#    future stacks one more JSPI resume frame on the V8 native stack
-#    before the previous one fully unwinds (Chrome treats the
-#    MessageChannel callback as a microtask-ish continuation, not a
-#    fresh task). Tk keypress handlers fire many short Tcl callbacks,
-#    so a few seconds of typing is enough to exhaust the 5 MB native
-#    stack -- the Pyodide RecursionError "in comparison" out of
-#    webloop.call_later is the symptom.
-#
-# Standard desktop tkinter code ends with root.mainloop() (or
-# turtle.done() which calls tkinter.mainloop()). We just need that
-# call to return so runPythonAsync() resolves -- the JS-side
-# setTimeout(pump, 8) loop in worker.ts then drives Tcl_DoOneEvent at
-# a steady ~125 Hz, which is enough for entries, animations, and
-# turtle. No JSPI suspends per tick, no stack accumulation.
 def _emx11_misc_mainloop(self, n=0):
     return None
 tkinter.Misc.mainloop = _emx11_misc_mainloop
@@ -343,30 +402,31 @@ def _emx11_module_mainloop(n=0):
 tkinter.mainloop = _emx11_module_mainloop
 `);
 
-  // 6. Run the user's app code via runPythonAsync so the wasm call stack
-  //    is JSPI-suspendable (required for the run_sync inside the patched
-  //    tkinter.Misc.after / mainloop to actually suspend rather than
-  //    fault). Standard desktop tkinter / turtle code is supported
-  //    unchanged: if the demo ends with `root.mainloop()` or
-  //    `turtle.done()`, our patched mainloop drives events forever via
-  //    JSPI yields, and runPythonAsync never returns. If the demo just
-  //    paints once and exits, control falls through to the JS pump
-  //    below, which keeps draining for any background events.
+  /* --- Stage: run the user's app ---
+   *
+   * runPythonAsync so the wasm call stack is JSPI-suspendable (required
+   * for the run_sync inside the patched tkinter.Misc.after to actually
+   * suspend rather than fault). Standard desktop tkinter / turtle code
+   * is supported unchanged: if the demo ends with `root.mainloop()` or
+   * `turtle.done()`, our patched mainloop returns immediately and
+   * control falls through to the JS pump below.
+   */
   post({ type: 'ready' });
   await py.runPythonAsync(demoCode);
 
-  // 6. Define the drain helper. Going through tkinter.Tk()'s
-  //    tkapp.dooneevent is mandatory for GIL safety: Tkapp_DoOneEvent
-  //    wraps Tcl_DoOneEvent with ENTER_TCL/LEAVE_TCL which set
-  //    _tkinter's `tcl_tstate` global so Tcl callbacks (button -command,
-  //    default <Configure> bindings, etc.) can re-enter Python via
-  //    PyEval_RestoreThread. Calling Tcl_DoOneEvent directly via
-  //    ccall fatals on the first such callback ("PyEval_RestoreThread:
-  //    GIL is released, current Python thread state is NULL"). Drain
-  //    inside Python so we pay only one PyProxy crossing per tick.
-  //    Use tkinter._default_root so the demo doesn't have to expose
-  //    anything -- standard `tkinter.Tk()` / `turtle.Screen()` both set
-  //    _default_root automatically.
+  /* --- Stage: drain helper ---
+   *
+   * Going through tkinter.Tk()'s tkapp.dooneevent is mandatory for GIL
+   * safety: Tkapp_DoOneEvent wraps Tcl_DoOneEvent with ENTER_TCL/LEAVE_TCL
+   * which set _tkinter's `tcl_tstate` global so Tcl callbacks (button
+   * -command, default <Configure> bindings, etc.) can re-enter Python via
+   * PyEval_RestoreThread. Calling Tcl_DoOneEvent directly via ccall
+   * fatals on the first such callback ("PyEval_RestoreThread: GIL is
+   * released, current Python thread state is NULL"). Drain inside Python
+   * so we pay only one PyProxy crossing per tick. Use tkinter._default_root
+   * so the demo doesn't have to expose anything -- standard `tkinter.Tk()`
+   * / `turtle.Screen()` both set _default_root automatically.
+   */
   py.runPython(`
 def _emx11_drain(max_n=256):
     root = tkinter._default_root
@@ -379,19 +439,40 @@ def _emx11_drain(max_n=256):
 `);
   const drain = py.runPython(`_emx11_drain`) as (max: number) => number;
 
-  // 7. Settle: Tk's realize/map/expose chain contains many `after 0`
-  //    callbacks. Drain → setTimeout(0) → drain until quiescent so
-  //    those timers fire (the browser-friendly Tcl notifier translates
-  //    them to real setTimeout(0)s).
-  for (let i = 0; i < 20; i++) {
+  /* --- Stage: settle ---
+   *
+   * Tk's realize/map/expose chain contains many `after 0` callbacks.
+   * Drain → setTimeout(0) → drain until quiescent so those timers fire
+   * (the browser-friendly Tcl notifier translates them to real
+   * setTimeout(0)s).
+   */
+  const SETTLE_MAX_PASSES = 20;
+  let settled = false;
+  for (let i = 0; i < SETTLE_MAX_PASSES; i++) {
     const n = drain(1024);
-    if (n === 0) break;
+    if (n === 0) { settled = true; break; }
     await new Promise<void>((r) => setTimeout(r, 0));
   }
+  if (!settled) {
+    logToMain(`settle: still draining after ${SETTLE_MAX_PASSES} passes; starting pump anyway`);
+  }
 
-  // 8. Start the long-running pump (one drain per setTimeout tick).
+  /* --- Stage: long-running pump ---
+   *
+   * One drain per setTimeout tick. Stops itself if the interpreter is
+   * gone (root.destroy() or unrecoverable Tcl error) -- otherwise we'd
+   * keep ccall'ing into a dead interp and flood main with errors.
+   */
+  let pumpStopped = false;
   function pump(): void {
-    drain(256);
+    if (pumpStopped) return;
+    try {
+      drain(256);
+    } catch (err) {
+      pumpStopped = true;
+      logToMain(`pump stopped: ${String((err as Error)?.message ?? err)}`);
+      return;
+    }
     setTimeout(pump, 8);
   }
   setTimeout(pump, 0);

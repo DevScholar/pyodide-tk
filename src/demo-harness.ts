@@ -6,6 +6,11 @@
  * mouse + keyboard. The only thing that changes between demos is the
  * Python source. So we extract the wiring into runDemo() and let each
  * demo's main.ts shrink to a one-liner.
+ *
+ * runDemo returns a `DemoHandle` with a `stop()` method. Vite HMR and
+ * SPA navigation should call it to terminate the worker and detach the
+ * window-level mouse/keyboard listeners; without it, repeated invokes
+ * accumulate workers (each pumping Tcl forever) and zombie listeners.
  */
 
 import { keyEventToKeysym, modifiersFromEvent } from '@emx11/runtime/keymap.js';
@@ -27,7 +32,17 @@ export interface RunDemoOptions {
   logId?: string;
 }
 
-export function runDemo(opts: RunDemoOptions): void {
+export interface DemoHandle {
+  /** Terminate the worker and detach all main-thread listeners. Safe to
+   *  call more than once. */
+  stop(): void;
+  /** Underlying worker, exposed for advanced demos that want to post
+   *  custom messages. Do not use to add listeners -- they won't be
+   *  cleaned up by stop(). */
+  worker: Worker;
+}
+
+export function runDemo(opts: RunDemoOptions): DemoHandle {
   const canvasId = opts.canvasId ?? 'emx11-canvas';
   const logId = opts.logId ?? 'log';
 
@@ -55,6 +70,21 @@ export function runDemo(opts: RunDemoOptions): void {
     name: 'pyodide-tk',
   });
 
+  /* AbortController bundles every addEventListener({signal}) call so a
+   * single abort() cleans up window-level mouse/key listeners + the
+   * canvas listeners + the worker message/error listeners. Without
+   * this, HMR-driven re-invokes leak listeners and the old worker
+   * keeps pumping Tcl in the background. */
+  const ac = new AbortController();
+  const { signal } = ac;
+  let stopped = false;
+  function stop(): void {
+    if (stopped) return;
+    stopped = true;
+    ac.abort();
+    worker.terminate();
+  }
+
   /* IME bridge: the worker runs em-x11 in a realm without a DOM, so
    * XSetICFocus / Tk_SetCaretPos can't anchor an OS IME by themselves.
    * Main owns a hidden <textarea>; the worker posts setFocus/setSpot/
@@ -75,30 +105,35 @@ export function runDemo(opts: RunDemoOptions): void {
       case 'ready': note('worker ready'); break;
       case 'error': note('worker ERROR:', msg.message); break;
       case 'imeFocus':
-        if (typeof msg.window === 'number') {
-          // eslint-disable-next-line no-console
-          console.log('[ime] focus window=', msg.window);
-          ime.setFocus(msg.window);
-        }
+        ime.setFocus(msg.window);
         break;
       case 'imeClearFocus':
-        // eslint-disable-next-line no-console
-        console.log('[ime] clear focus');
         ime.clearFocus();
         break;
       case 'imeSpot':
-        // eslint-disable-next-line no-console
-        console.log('[ime] spot window=', msg.window, 'local=', msg.spotX, msg.spotY);
+        /* Window-local caret pixels -- positionHint below carries the
+         * root-relative version that the IME actually anchors on, so we
+         * don't act on this. Kept in the union for diagnostics; intentionally
+         * a no-op. */
         break;
       case 'imePositionHint':
-        if (typeof msg.absX === 'number' && typeof msg.absY === 'number') {
-          // eslint-disable-next-line no-console
-          console.log('[ime] positionHint abs=', msg.absX, msg.absY);
-          ime.applyPosition(msg.absX, msg.absY);
-        }
+        ime.applyPosition(msg.absX, msg.absY);
         break;
     }
-  });
+  }, { signal });
+
+  /* worker.onerror catches uncaught throws in the worker script itself
+   * (syntax errors, top-level rejections that escape boot's catch,
+   * postMessage with a non-cloneable value). Without this, all the
+   * user sees is silence; the worker stays alive but does nothing.
+   * messageerror covers the rarer case of a structured-clone failure
+   * on inbound postMessage. */
+  worker.addEventListener('error', (e: ErrorEvent) => {
+    note('worker script error:', e.message || e.filename, `(line ${e.lineno})`);
+  }, { signal });
+  worker.addEventListener('messageerror', () => {
+    note('worker messageerror: a postMessage payload failed structured clone');
+  }, { signal });
 
   const initMsg: WorkerInboundMessage = {
     type: 'init',
@@ -112,6 +147,7 @@ export function runDemo(opts: RunDemoOptions): void {
   // --- input relay --------------------------------------------------------
 
   function send(msg: WorkerInboundMessage): void {
+    if (stopped) return;
     worker.postMessage(msg);
   }
 
@@ -128,7 +164,7 @@ export function runDemo(opts: RunDemoOptions): void {
       button: e.button + 1,
       modifiers: modifiersFromEvent(e),
     });
-  });
+  }, { signal });
 
   // mouseup/mousemove on window so a release outside the canvas during
   // a drag still reaches the C-side implicit grab.
@@ -139,23 +175,23 @@ export function runDemo(opts: RunDemoOptions): void {
       button: e.button + 1,
       modifiers: modifiersFromEvent(e),
     });
-  });
+  }, { signal });
 
   window.addEventListener('mousemove', (e) => {
     const { x, y } = cssPoint(e);
     send({
-      type: 'mousemove', x, y, button: 0,
+      type: 'mousemove', x, y,
       modifiers: modifiersFromEvent(e),
     });
-  });
+  }, { signal });
 
-  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault(), { signal });
 
   // Keyboard-focusable so KeyboardEvents have a meaningful activeElement.
   canvas.tabIndex = 0;
 
-  window.addEventListener('keydown', (e) => relayKey('keydown', e));
-  window.addEventListener('keyup',   (e) => relayKey('keyup',   e));
+  window.addEventListener('keydown', (e) => relayKey('keydown', e), { signal });
+  window.addEventListener('keyup',   (e) => relayKey('keyup',   e), { signal });
 
   function relayKey(type: 'keydown' | 'keyup', e: KeyboardEvent): void {
     const keysym = keyEventToKeysym(e);
@@ -181,5 +217,13 @@ export function runDemo(opts: RunDemoOptions): void {
     send({ type, keysym, modifiers: modifiersFromEvent(e), hasFocus, text });
   }
 
+  /* Vite HMR: when this module is replaced, tear down the previous run
+   * so the new one isn't competing with a leftover worker. import.meta.hot
+   * is only present in dev builds. */
+  if (import.meta.hot) {
+    import.meta.hot.dispose(() => stop());
+  }
+
   note('main: worker spawned, canvas transferred');
+  return { stop, worker };
 }

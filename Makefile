@@ -43,7 +43,7 @@ LDFLAGS_X = $(WASMEH)
 # would be smaller but the export list for Tcl/Tk is huge.
 SIDE_LDFLAGS = -sSIDE_MODULE=1 $(WASMEH)
 
-.PHONY: all tclprep tkprep tkinter clean distclean toolcheck smoke-tcl libtcl-so stage
+.PHONY: all tclprep tkprep tkinter clean distclean toolcheck smoke-tcl libtcl-so stage cpython-src
 
 all: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(LIBDIR)/libemx11.so $(LIBDIR)/libwacl.so $(TKINTER_OUT)/_tkinter.so stage
 

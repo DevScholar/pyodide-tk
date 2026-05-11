@@ -10,19 +10,42 @@ export interface InitMessage {
   surface: OffscreenCanvas;
   width: number;
   height: number;
-  /** Python source executed once after _tkinter loads. Must bind a
-   *  module-level `root = tkinter.Tk()` -- the worker's drain helper
-   *  references it. */
+  /** Python source executed once after _tkinter loads. The worker's
+   *  drain helper looks at `tkinter._default_root`, so the demo doesn't
+   *  need to expose anything -- a plain `tkinter.Tk()` is enough. */
   demoCode: string;
 }
 
-export interface MouseRelay {
-  type: 'mousedown' | 'mouseup' | 'mousemove';
+/* --- Mouse relay: main → worker ---
+ *
+ * Discriminated by `type` so TS guarantees `button` only exists where
+ * it's meaningful (down/up). A previous flat shape carried `button: 0`
+ * on moves; the worker never used it but downstream consumers had to
+ * remember that convention. The union also lets us drop the
+ * `m.type === 'mousemove'` else-branch having to spell out an absent
+ * button.
+ */
+export interface MouseDownRelay {
+  type: 'mousedown';
   x: number;
   y: number;
-  button: number;     // X11 button code (1/2/3); 0 for move
-  modifiers: number;  // X11 modifier mask
+  button: number;
+  modifiers: number;
 }
+export interface MouseUpRelay {
+  type: 'mouseup';
+  x: number;
+  y: number;
+  button: number;
+  modifiers: number;
+}
+export interface MouseMoveRelay {
+  type: 'mousemove';
+  x: number;
+  y: number;
+  modifiers: number;
+}
+export type MouseRelay = MouseDownRelay | MouseUpRelay | MouseMoveRelay;
 
 export interface KeyRelay {
   type: 'keydown' | 'keyup';
@@ -44,25 +67,45 @@ export interface TextKeyRelay {
   text: string;
 }
 
-/** worker → main: XSetICFocus / Tk_SetCaretPos commands the worker's
- *  TextInputOverlay generates. Main applies them to the hidden
- *  <textarea> so the OS IME anchors near the X widget caret.
+/* --- IME control: worker → main ---
  *
- *  positionHint carries root-relative caret pixels precomputed by the
- *  host (window-tree origin + window-local spot). Main converts that
- *  into viewport CSS pixels using the canvas's getBoundingClientRect. */
-export interface ImeControlMessage {
-  type: 'imeFocus' | 'imeClearFocus' | 'imeSpot' | 'imePositionHint';
-  /** imeFocus / imeSpot only. */
-  window?: number;
-  /** imeSpot: window-local X11 caret pixels (we keep them around for
-   *  diagnostics; main mostly cares about positionHint). */
-  spotX?: number;
-  spotY?: number;
-  /** imePositionHint: root-relative absolute caret pixels. */
-  absX?: number;
-  absY?: number;
+ * XSetICFocus / Tk_SetCaretPos commands the worker's TextInputOverlay
+ * generates; main applies them to the hidden <textarea> so the OS IME
+ * anchors near the X widget caret.
+ *
+ * Each tag carries only its own fields so demo-harness can drop the
+ * `typeof msg.window === 'number'` guards that the previous
+ * everything-optional shape required.
+ *
+ * positionHint carries root-relative caret pixels precomputed by the
+ * host (window-tree origin + window-local spot). Main converts that
+ * into viewport CSS pixels using the canvas's getBoundingClientRect.
+ */
+export interface ImeFocusMessage {
+  type: 'imeFocus';
+  window: number;
 }
+export interface ImeClearFocusMessage {
+  type: 'imeClearFocus';
+}
+export interface ImeSpotMessage {
+  type: 'imeSpot';
+  window: number;
+  /** Window-local X11 caret pixels. Kept for diagnostics; main mostly
+   *  acts on positionHint instead. */
+  spotX: number;
+  spotY: number;
+}
+export interface ImePositionHintMessage {
+  type: 'imePositionHint';
+  absX: number;
+  absY: number;
+}
+export type ImeControlMessage =
+  | ImeFocusMessage
+  | ImeClearFocusMessage
+  | ImeSpotMessage
+  | ImePositionHintMessage;
 
 export type WorkerInboundMessage = InitMessage | MouseRelay | KeyRelay | TextKeyRelay;
 

@@ -23,22 +23,7 @@
           href="/pyodide-tk-assets/lib/libemx11.so" />
     <link rel="preload" as="fetch" crossorigin
           href="/pyodide-tk-assets/lib/_tkinter.so" />
-    <style>
-      html, body { margin: 0; min-height: 100%; font-family: system-ui, sans-serif; }
-      body { padding: 1rem; display: flex; flex-direction: column; gap: 1rem; }
-      #log {
-        font-family: ui-monospace, Menlo, monospace;
-        white-space: pre-wrap;
-        background: #111; color: #ddd;
-        padding: 0.75rem 1rem; border-radius: 6px;
-        max-height: 12rem; overflow: auto;
-      }
-      #emx11-canvas {
-        border: 1px solid #888; background: #fff;
-        width: 1024px; height: 768px;
-        flex: none; align-self: flex-start;
-      }
-    </style>
+    <link rel="stylesheet" href="/demos/_shared/style.css" />
   </head>
   <body>
     <h1>pyodide-tk · tk-hello</h1>
@@ -93,10 +78,6 @@ out.pack(padx=12, pady=8)
 root.mainloop()
     </script>
 
-    <!-- Hand the inline Python to the shared worker harness. -->
-    <script type="module">
-      import { runDemo } from '/src/demo-harness.ts';
-      runDemo({ pythonCode: document.getElementById('demo').textContent });
-    </script>
+    <script type="module" src="/demos/_shared/boot.ts"></script>
   </body>
 </html>
