@@ -85,7 +85,6 @@ function onKey(k: KeyRelay): void {
     emX11.display.inject.keyUp({ keysym: k.keysym, modifiers: k.modifiers, hasFocus: k.hasFocus, text: k.text });
   }
 }
-}
 
 function onTextKey(t: TextKeyRelay): void {
   if (!emX11 || !t.text) return;
