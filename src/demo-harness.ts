@@ -157,7 +157,20 @@ export function runDemo(opts: RunDemoOptions): DemoHandle {
   }
 
   canvas.addEventListener('mousedown', (e) => {
-    canvas.focus();
+    /* If the IME bridge's hidden textarea currently holds DOM focus,
+     * the OS IME has anchored its per-element state (Chinese mode,
+     * candidate window) to it. Browser default mousedown would focus
+     * the canvas (tabIndex=0), blurring the textarea -- and on Windows
+     * a subsequent .focus() restores DOM focus but resets the IME to
+     * default English. preventDefault keeps the textarea focused so
+     * the second click on the same Tk Entry/Text widget preserves IME
+     * state. Otherwise focus the canvas as before so plain key routing
+     * works for non-text demos. */
+    if (document.activeElement instanceof HTMLTextAreaElement) {
+      e.preventDefault();
+    } else {
+      canvas.focus();
+    }
     const { x, y } = cssPoint(e);
     send({
       type: 'mousedown', x, y,
