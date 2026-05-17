@@ -197,6 +197,30 @@ async function boot(
   let wakeScheduled = false;
   let pendingTimerId: ReturnType<typeof setTimeout> | null = null;
   let drainRef: ((max: number) => number) | null = null;
+  /* mainloopActive: set while Python is inside our patched Misc.mainloop.
+   * Mainloop runs its own drain-and-park loop (see Python prelude below);
+   * the JS-side pump would just race it with redundant dooneevent calls.
+   * Keep the pump's wake path warm for *post*-mainloop life (e.g. user
+   * called root.quit() but the canvas should remain interactive while
+   * post-mainloop Python is still running), but make runDrain a no-op
+   * while mainloop owns the event source. */
+  let mainloopActive = false;
+  /* parkResolvers: Python-side mainloop awaits parkUntilWake() to idle
+   * efficiently. Any wake source (notifier timer fired, notifier alert,
+   * input message from main) resolves all pending parkers in addition to
+   * its normal requestPump() call. setTimeout(0) parking would burn CPU
+   * at the browser's nested-timer floor (~250 Hz on Chromium); resolving
+   * a promise on real wakes keeps idle CPU at 0% like the post-mainloop
+   * pump does. */
+  let parkResolvers: Array<() => void> = [];
+  const wakeParked = (): void => {
+    if (parkResolvers.length === 0) return;
+    const rs = parkResolvers;
+    parkResolvers = [];
+    for (const r of rs) r();
+  };
+  const parkUntilWake = (): Promise<void> =>
+    new Promise<void>((resolve) => { parkResolvers.push(resolve); });
 
   const requestPump = (): void => {
     if (pumpStopped || wakeScheduled || !drainRef) return;
@@ -205,7 +229,7 @@ async function boot(
   };
   const runDrain = (): void => {
     wakeScheduled = false;
-    if (pumpStopped || !drainRef) return;
+    if (pumpStopped || !drainRef || mainloopActive) return;
     let n: number;
     try {
       n = drainRef(256);
@@ -227,11 +251,22 @@ async function boot(
       pendingTimerId = setTimeout(() => {
         pendingTimerId = null;
         requestPump();
+        wakeParked();
       }, ms);
     },
-    onAlert: (): void => { requestPump(); },
+    onAlert: (): void => { requestPump(); wakeParked(); },
   });
-  wakePump = requestPump;
+  wakePump = (): void => { requestPump(); wakeParked(); };
+
+  /* Expose the park primitive and the mainloop-active flag setter on the
+   * worker global so the Python prelude can reach them via `js.<name>`.
+   * Kept attached to the typed `ctx` (DedicatedWorkerGlobalScope) cast,
+   * not bare `self`, to keep TS happy. */
+  (ctx as unknown as Record<string, unknown>)._emx11_park = parkUntilWake;
+  (ctx as unknown as Record<string, unknown>)._emx11_set_mainloop_active = (v: boolean): void => {
+    mainloopActive = v;
+    if (!v) requestPump();
+  };
 
   /* --- Stage: parallel asset prefetch + pyodide.mjs import ---
    *
@@ -396,17 +431,47 @@ async function boot(
    * then resumes -- exactly the yielding semantics turtle needs.
    * Misc.after-with-callback paths fall through unchanged.
    *
-   * Patch -- Misc.mainloop / tkinter.mainloop:
-   * Standard desktop tkinter / turtle code ends with `root.mainloop()`
-   * or `turtle.done()` (which calls `tkinter.mainloop()`). The C
-   * Tkapp_MainLoop calls Tcl_DoOneEvent(0) in a tight loop with no
-   * yield to JS, so the browser never composites and the worker is
-   * wedged. Make both entry points return immediately; the JS-side
-   * adaptive pump below drives Tcl_DoOneEvent -- fast when events are
-   * flowing, backing off to ~10 Hz when idle and woken instantly on
-   * any input message from main. No JSPI suspends per tick, no
-   * native-stack accumulation (see the project_pyodide_tk_jspi_stack
-   * memory).
+   * Patch -- Misc.mainloop / tkinter.mainloop / Misc.quit:
+   * Standard desktop tkinter / turtle / PySimpleGUI code assumes
+   * `root.mainloop()` (and `Window.read()` which calls it under the
+   * hood) **blocks** until a callback invokes `root.quit()`. Returning
+   * immediately, as the previous patch did, broke any caller relying
+   * on the "code after mainloop runs only after the user closes the
+   * window" contract -- most notably PySimpleGUI's
+   * `while True: event = window.read(); ...` pattern, which spun a
+   * useless 1e9-iteration loop reading empty events.
+   *
+   * The reason it returned immediately was that CPython's
+   * `Tkapp_MainLoop` calls `Tcl_DoOneEvent(0)` (no `TCL_DONT_WAIT`),
+   * which on a real OS blocks the thread in `select()` until a file
+   * descriptor / timer fires. In a worker the only event source is JS
+   * itself, so blocking the wasm thread there freezes the universe.
+   * Naive workaround -- `pyodide.ffi.run_sync(loop.run_forever())` --
+   * works once, but the suspended continuation keeps the entire
+   * asyncio.run_forever frame chain alive in V8; every nested `await`
+   * inside callbacks piles on. Native-stack snapshots grew to ~5 MB
+   * and OOM'd the worker within a few hundred ticks (see the
+   * project_pyodide_tk_jspi_stack memory).
+   *
+   * Shallow-suspend fix: keep the outer "block until quit" loop as
+   * plain Python, drain everything pending via
+   * `dooneevent(TCL_DONT_WAIT)` until the queue empties, then suspend
+   * exactly *once* per iteration on `js._emx11_park()` -- a Promise
+   * that resolves the next time the JS-side notifier wake fires
+   * (timer expiry, alert, or main-thread input message). Each
+   * suspended continuation is shallow (one Python frame, one
+   * `run_sync` host frame) and resolves on the next macrotask, so V8
+   * holds at most one snapshot at a time. Idle CPU is 0% -- the
+   * worker thread parks the same way a Linux X11 client parks in
+   * `select()`. Quit detection is a Python-level counter bumped by a
+   * monkey-patched `Misc.quit`; nested mainloops work because each
+   * level snapshots the counter on entry and exits when it bumps.
+   *
+   * The JS pump (see `runDrain` above) is gated off via
+   * `_emx11_set_mainloop_active` while mainloop owns the event loop,
+   * so the two don't race on `dooneevent`. After mainloop returns,
+   * the gate is released and the pump resumes for any post-mainloop
+   * Python work that still wants live widgets.
    *
    * Note: we deliberately do NOT patch Misc.update / Misc.update_idletasks
    * to yield. Those are "flush pending events" not "show now" -- the
@@ -457,23 +522,84 @@ def _emx11_yielding_after(self, ms, func=None, *args):
     return _emx11_orig_after(self, ms, func, *args)
 tkinter.Misc.after = _emx11_yielding_after
 
+# Quit accounting. Stock tkinter.Misc.quit calls into Tcl-side
+# Tkapp_Quit, which sets a static flag inside _tkinter.c that the
+# bundled Tkapp_MainLoop reads. We don't run that mainloop, so we mirror
+# the flag in pure Python: every quit() bumps the counter, our mainloop
+# snapshots it on entry and exits when it bumps. Counter (not bool)
+# preserves nested-mainloop semantics: a modal dialog calling mainloop
+# inside an outer mainloop pops exactly one level per quit.
+_emx11_quit_count = [0]
+_emx11_orig_quit = tkinter.Misc.quit
+def _emx11_quit(self):
+    _emx11_quit_count[0] += 1
+    try:
+        _emx11_orig_quit(self)
+    except Exception:
+        # On a destroyed interpreter the Tcl call can raise; the Python
+        # counter is what our mainloop reads, so the bump is what matters.
+        pass
+tkinter.Misc.quit = _emx11_quit
+
+# TCL_DONT_WAIT = 2; passing only this flag means "process any ready
+# event of any type, do not block" (Tcl_DoOneEvent docs: "If no event
+# type flags are given, all event types are processed").
+_EMX11_TCL_DONT_WAIT = 2
+
+async def _emx11_park():
+    # Resolved by worker.ts on the next notifier wake or input message.
+    # Returns a Promise; await it to suspend the Python stack via JSPI.
+    await js._emx11_park()
+
 def _emx11_misc_mainloop(self, n=0):
-    return None
+    target = _emx11_quit_count[0]
+    tkapp = self.tk
+    js._emx11_set_mainloop_active(True)
+    try:
+        while _emx11_quit_count[0] == target:
+            # Drain everything Tcl has queued without sleeping. Callbacks
+            # (button -command, <Key> bind) re-enter Python here; if one
+            # calls Misc.quit, the counter bumps and the outer while exits.
+            try:
+                while tkapp.dooneevent(_EMX11_TCL_DONT_WAIT):
+                    if _emx11_quit_count[0] != target:
+                        break
+            except Exception:
+                # Interpreter went away (root.destroy) -- treat as quit.
+                break
+            if _emx11_quit_count[0] != target:
+                break
+            # One shallow JSPI suspend per iteration. Park until the JS
+            # side gets a real wake (notifier timer, alert, input msg).
+            run_sync(_emx11_park())
+    finally:
+        # Consume one quit level so a future mainloop call starts from
+        # the same baseline. If the loop exited because the interpreter
+        # was destroyed (no quit bump), don't underflow.
+        if _emx11_quit_count[0] > target:
+            _emx11_quit_count[0] -= 1
+        js._emx11_set_mainloop_active(False)
 tkinter.Misc.mainloop = _emx11_misc_mainloop
 
 def _emx11_module_mainloop(n=0):
-    return None
+    root = tkinter._default_root
+    if root is None:
+        return None
+    return _emx11_misc_mainloop(root, n)
 tkinter.mainloop = _emx11_module_mainloop
 `);
 
   /* --- Stage: run the user's app ---
    *
    * runPythonAsync so the wasm call stack is JSPI-suspendable (required
-   * for the run_sync inside the patched tkinter.Misc.after to actually
-   * suspend rather than fault). Standard desktop tkinter / turtle code
-   * is supported unchanged: if the demo ends with `root.mainloop()` or
-   * `turtle.done()`, our patched mainloop returns immediately and
-   * control falls through to the JS pump below.
+   * for the run_sync inside the patched tkinter.Misc.after and the
+   * shallow-suspend mainloop to actually park rather than fault).
+   * Standard desktop tkinter / turtle / PySimpleGUI code is supported
+   * unchanged: if the demo ends with `root.mainloop()`, this `await`
+   * blocks here until a callback calls `root.quit()`, exactly as on
+   * desktop. Post-mainloop Python (if any) then runs, and finally
+   * control falls through to the JS-side pump below to keep widgets
+   * alive after the demo function returns.
    */
   post({ type: 'ready' });
   await py.runPythonAsync(demoCode);

@@ -153,7 +153,18 @@ export function runDemo(opts: RunDemoOptions): DemoHandle {
 
   function cssPoint(e: MouseEvent): { x: number; y: number } {
     const rect = canvas!.getBoundingClientRect();
-    return { x: (e.clientX - rect.left) | 0, y: (e.clientY - rect.top) | 0 };
+    /* Scale CSS coords back into the canvas's internal coordinate
+     * space. The shared style.css renders #emx11-canvas at a fixed
+     * 1024x768 CSS box regardless of the canvas's `width`/`height`
+     * attributes, so a demo with a 640x360 backing buffer gets its
+     * clicks landing at the wrong widget without this transform.
+     * Guard against zero-size rects (collapsed layout during HMR). */
+    const sx = rect.width > 0 ? canvas!.width / rect.width : 1;
+    const sy = rect.height > 0 ? canvas!.height / rect.height : 1;
+    return {
+      x: ((e.clientX - rect.left) * sx) | 0,
+      y: ((e.clientY - rect.top) * sy) | 0,
+    };
   }
 
   canvas.addEventListener('mousedown', (e) => {

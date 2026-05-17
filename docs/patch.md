@@ -2,14 +2,16 @@
 
 This document describes how the source trees built by pyodide-tk
 diverge from the upstream Tcl 8.6.15, Tk 8.6.15, and CPython 3.14.2
-releases.
+releases, **and** the runtime Python monkey-patches the worker
+applies before user code runs.
 
 The short version: **pyodide-tk applies no source-level patches.**
 All three components are built unmodified from their official
 tarballs. The wasm-specific behaviour comes from build flags, a post-
-configure sed pass, and the way the resulting archives are relinked
-as Pyodide-style side modules. The points below document those
-deltas so they can be reproduced and audited.
+configure sed pass, the way the resulting archives are relinked
+as Pyodide-style side modules, and a small set of runtime
+monkey-patches against `tkinter` in the worker prelude. The points
+below document those deltas so they can be reproduced and audited.
 
 ## Summary
 
@@ -20,6 +22,7 @@ deltas so they can be reproduced and audited.
 | CPython 3.14.2 `_tkinter` | Modules/_tkinter.c | none   | side-module compile against em-x11 + Pyodide xbuildenv `Python.h` |
 | em-x11           | sibling repo            | none           | rebuilt under wasm-EH `-fPIC`, relinked to `libemx11.so` with NEEDED entry |
 | `::wacl::*` cmds | `../wacl-tk/opt/wacl.c` | none           | sibling source compiled as `libwacl.so` side module; `Wacl_Init(interp)` invoked via ctypes on every `tkinter.Tk()` |
+| `tkinter` Python | stdlib `Lib/tkinter`    | none           | runtime monkey-patches in worker prelude (`Misc.after`, `Misc.mainloop`, `tkinter.mainloop`, `Misc.quit`, `Tk.__init__`) — see "Runtime Python prelude patches" below |
 
 Contrast with the sibling [wacl-tk](../../wacl-tk/docs/patch.md),
 which inherits a Tcl source patch from the upstream wacl project.
@@ -304,3 +307,155 @@ to preserve the project's no-source-patch invariant — `_tkinter.c`
 and `tkappinit.c` remain literally byte-identical to upstream
 CPython 3.14.2. The cost is a few lines of Python wiring; the
 benefit is that bumping CPython is `tar -x` away with no rebase.
+
+## Runtime Python prelude patches
+
+These are monkey-patches the worker applies to `tkinter` via
+`pyodide.runPythonAsync` **before** the user demo runs. They are not
+source patches against CPython's `Lib/tkinter` — the on-disk
+`tkinter.tar` staged into MEMFS is byte-identical to the
+`Python-3.14.2.tgz` `Lib/tkinter/` tree. The patches live in the
+prelude string inside [`src/worker.ts`](../src/worker.ts) and only
+take effect inside the worker realm pyodide-tk runs.
+
+The worker also installs a JS-side pair to back the prelude:
+
+- **`globalThis._emx11_park()`** returns a `Promise<void>` that
+  resolves on the next notifier wake (Tcl timer expiry, alert) or
+  main-thread input message. Used by the mainloop patch as its
+  per-iteration idle point.
+- **`globalThis._emx11_set_mainloop_active(bool)`** gates the
+  JS-side adaptive pump (`runDrain`) so it does not race the
+  Python-side mainloop on `dooneevent`.
+
+### `tkinter.Tk.__init__` — auto-register `::wacl::*`
+
+**Patch shape.** Wrap `Tk.__init__` so every new root, immediately
+after the original constructor returns, gets `Wacl_Init(interp)`
+called on its underlying `Tcl_Interp*` via `ctypes.CDLL`.
+
+**Why.** `libwacl.so` exposes the `::wacl::dom` and `::wacl::jscall`
+Tcl commands. Stock CPython has no place to register them between
+`Tcl_Init` and the first Python-visible Tcl call; doing it in
+`_tkinter.c`'s `tkappinit.c` would require a source patch we
+explicitly forbid (see "Why a side module instead of patching
+CPython's tkappinit.c" above). Hooking `Tk.__init__` from Python is
+the smallest equivalent.
+
+**Failure mode.** If `libwacl.so` isn't shipped (sibling wacl-tk not
+built), the `ctypes.CDLL` call raises `OSError`; the patch swallows
+it and leaves `Tk.__init__` untouched. Plain tkinter still works,
+`::wacl::*` just isn't registered.
+
+### `tkinter.Misc.after(ms)` (no-callback form) — yield via JSPI
+
+**Patch shape.** Intercept the one-argument form
+`root.after(ms)`. When `func` is `None`, replace the Tcl-side sync
+`after delay` with `run_sync(asyncio.sleep(ms / 1000))`. The
+two-argument form (`root.after(ms, callback)`) falls through
+unchanged.
+
+**Why.** The Tcl-level sync `after delay` busy-loops
+`Tcl_DoOneEvent` against wallclock until the time elapses. Our
+libemx11/libtcl/libtk are built without Asyncify (Pyodide 314 ships
+JSPI instead), so emscripten's `emscripten_sleep(1)` inside em-x11's
+notifier resolves to a no-op stub — the busy loop never yields to
+JS, the browser never composites, and turtle's per-step
+`_cv.after(delay)` burns ~7 s of CPU painting nothing. Routing
+through `pyodide.ffi.run_sync(asyncio.sleep(...))` suspends the wasm
+stack via JSPI, lets one JS turn run (timers fire, frame composites),
+and resumes. This is exactly the yielding semantics turtle's
+animation loop expects.
+
+**Why not yield from `Misc.update` / `Misc.update_idletasks` too?**
+Those are "flush pending events" not "show now". Yielding inside
+`update()` makes turtle's `_Screen.setup()` show its default-sized
+scroll area for a frame before the geometry resize lands. The next
+yield point downstream (a `Misc.after` sleep, or mainloop's park)
+composites the post-update state.
+
+### `tkinter.Misc.mainloop` / `tkinter.mainloop` — blocking shallow-suspend loop
+
+**Patch shape.** Replace both entry points with a Python loop that
+- snapshots `_emx11_quit_count[0]` as `target`,
+- sets `_emx11_set_mainloop_active(True)`,
+- repeatedly drains `tkapp.dooneevent(TCL_DONT_WAIT)` until the
+  queue empties or a callback bumps the quit counter,
+- on each outer iteration suspends exactly **once** via
+  `run_sync(_emx11_park())` until the JS notifier or an input
+  message wakes the worker,
+- exits when `_emx11_quit_count[0] != target`,
+- on exit decrements the counter (consuming the quit level) and
+  clears `_emx11_set_mainloop_active(False)`.
+
+**Why this specific shape.** Two failure modes had to be avoided:
+
+- *Returning immediately* (the previous patch's behaviour) broke any
+  caller assuming "code after `mainloop()` runs only after the user
+  closes the window". Most painfully, PySimpleGUI's
+  `while True: event = window.read(); ...` pattern — `read()`
+  internally calls `mainloop()` then returns the last button click —
+  spun a tight loop reading empty events.
+- *Blocking via `run_sync(loop.run_forever())`* worked in principle
+  but kept the entire `asyncio.run_forever` frame chain alive inside
+  a single never-resolving JSPI continuation. Every nested `await`
+  inside a callback piled on; V8's native-stack snapshot grew to
+  ~5 MB and OOM'd the worker within a few hundred ticks. See the
+  `project_pyodide_tk_jspi_stack` memory.
+
+The shallow-suspend loop sidesteps both. The outer `while not quit`
+is plain Python — no JSPI suspension across iterations. Only the
+inner `run_sync(_emx11_park())` suspends, and that continuation
+resolves on the next macrotask (the next JS notifier wake or input
+message), so V8 holds at most one continuation snapshot at any
+moment. Idle CPU is 0% — the worker parks the same way a Linux X11
+client parks in `select()`.
+
+**Quit accounting.** Stock `tkinter.Misc.quit()` calls into
+`Tkapp_Quit`, which sets a static flag inside `_tkinter.c` that the
+bundled `Tkapp_MainLoop` reads. We don't run that mainloop, so the
+patch installs `_emx11_quit_count` as a Python-level mirror and
+wraps `Misc.quit` to bump it. Using a counter (not a bool) preserves
+nested-mainloop semantics: a modal dialog calling `mainloop()`
+inside an outer `mainloop()` pops exactly one level per `quit()`.
+
+**`tkinter.mainloop()` (module-level)** delegates to the patched
+`Misc.mainloop` on `tkinter._default_root`. `turtle.done()` reaches
+this path; the blocking behaviour now matches desktop tkinter.
+
+### `tkinter.Misc.quit` — bump the Python-level quit counter
+
+**Patch shape.** Wrap `Misc.quit` so each call increments
+`_emx11_quit_count[0]` before delegating to the original. Exceptions
+from the original (e.g. on a destroyed interpreter) are swallowed —
+the counter bump is what our mainloop loop reads.
+
+**Why.** Already covered above under "Quit accounting"; listed
+separately here because it is its own monkey-patch and a future
+maintainer searching for `Misc.quit` should find an entry.
+
+### JS-side pump gating
+
+Not a Python patch, but tightly coupled to `Misc.mainloop`. While
+`_emx11_set_mainloop_active(True)` is in effect, `runDrain` returns
+early so the JS-side adaptive pump does not race the Python loop on
+`dooneevent`. The flag clears when mainloop exits, and `runDrain` is
+kicked once to handle any events that queued during teardown. This
+keeps the post-mainloop world (any Python that runs after
+`root.mainloop()` returns) interactive without the user re-arming a
+pump.
+
+### Why these live in the worker prelude instead of in `Lib/tkinter`
+
+The on-disk `Lib/tkinter` tree is staged as
+`pyodide-tk-assets/tkinter.tar` and is byte-identical to upstream
+CPython 3.14.2. Patching it on disk would (a) silently complicate
+ABI / version-bump comparisons against upstream, and (b) make the
+patches invisible to anyone reading `worker.ts` to understand the
+runtime. Keeping them as a prelude string means everything that
+makes pyodide-tk's `tkinter` behave the way it does — the
+yielding `after`, the blocking-but-shallow mainloop, the wacl
+auto-install — is reachable from one place. The cost is that a
+demo that does `del tkinter.Misc.mainloop` could regress to the
+default `Tkapp_MainLoop` (which would wedge the worker); we accept
+that as out of scope.
