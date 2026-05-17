@@ -75,6 +75,7 @@ function onMouse(m: MouseRelay): void {
   } else {
     emX11.display.inject.mouseMove({ x: m.x, y: m.y, modifiers: m.modifiers });
   }
+  wakePump();
 }
 
 function onKey(k: KeyRelay): void {
@@ -84,12 +85,20 @@ function onKey(k: KeyRelay): void {
   } else {
     emX11.display.inject.keyUp({ keysym: k.keysym, modifiers: k.modifiers, hasFocus: k.hasFocus, text: k.text });
   }
+  wakePump();
 }
 
 function onTextKey(t: TextKeyRelay): void {
   if (!emX11 || !t.text) return;
   emX11.display.inject.textKey(t.text);
+  wakePump();
 }
+
+/* The pump's adaptive scheduler is installed by boot() once `drain` is
+ * available. Until then wakePump is a no-op: input messages that arrive
+ * before the user code finished loading just queue events in em-x11; the
+ * post-settle pump kickoff drains them. */
+let wakePump: () => void = () => {};
 
 /* -------------------------------------------------------------------------
  * Pyodide private-API surface
@@ -169,6 +178,60 @@ async function boot(
         post({ type: 'imePositionHint', absX, absY }),
     },
   });
+
+  /* Install the Tcl notifier wake target. libemx11's notifier.c
+   * (real_SetTimer / real_AlertNotifier) forwards Tcl's standardised
+   * setTimerProc + alertNotifierProc here. The pump is then purely
+   * event-driven: drain only when woken (by an X event from input,
+   * a Tcl timer expiring at its exact deadline, or an explicit alert),
+   * with zero scheduled work in between. This mirrors a Linux X11
+   * client sitting at select() with no fds ready -- the JS engine
+   * parks the worker thread instead of polling.
+   *
+   * The handlers below are wired up early but the actual pumping
+   * helpers (`requestPump`, `pumpStopped`) only become real later in
+   * boot, once `drain` is bound. Until then we just record the
+   * latest timer ms; any alerts that arrive before drain is bound
+   * are absorbed by the post-settle pump kickoff. */
+  let pumpStopped = false;
+  let wakeScheduled = false;
+  let pendingTimerId: ReturnType<typeof setTimeout> | null = null;
+  let drainRef: ((max: number) => number) | null = null;
+
+  const requestPump = (): void => {
+    if (pumpStopped || wakeScheduled || !drainRef) return;
+    wakeScheduled = true;
+    setTimeout(runDrain, 0);
+  };
+  const runDrain = (): void => {
+    wakeScheduled = false;
+    if (pumpStopped || !drainRef) return;
+    let n: number;
+    try {
+      n = drainRef(256);
+    } catch (err) {
+      pumpStopped = true;
+      logToMain(`pump stopped: ${String((err as Error)?.message ?? err)}`);
+      return;
+    }
+    if (n > 0) requestPump();
+  };
+
+  emX11.display.installEventLoopWake({
+    onTimer: (ms: number): void => {
+      if (pendingTimerId !== null) {
+        clearTimeout(pendingTimerId);
+        pendingTimerId = null;
+      }
+      if (ms < 0 || pumpStopped) return;
+      pendingTimerId = setTimeout(() => {
+        pendingTimerId = null;
+        requestPump();
+      }, ms);
+    },
+    onAlert: (): void => { requestPump(); },
+  });
+  wakePump = requestPump;
 
   /* --- Stage: parallel asset prefetch + pyodide.mjs import ---
    *
@@ -339,10 +402,11 @@ async function boot(
    * Tkapp_MainLoop calls Tcl_DoOneEvent(0) in a tight loop with no
    * yield to JS, so the browser never composites and the worker is
    * wedged. Make both entry points return immediately; the JS-side
-   * setTimeout pump below drives Tcl_DoOneEvent at a steady ~125 Hz,
-   * which is enough for entries, animations, and turtle. No JSPI
-   * suspends per tick, no native-stack accumulation (see the
-   * project_pyodide_tk_jspi_stack memory).
+   * adaptive pump below drives Tcl_DoOneEvent -- fast when events are
+   * flowing, backing off to ~10 Hz when idle and woken instantly on
+   * any input message from main. No JSPI suspends per tick, no
+   * native-stack accumulation (see the project_pyodide_tk_jspi_stack
+   * memory).
    *
    * Note: we deliberately do NOT patch Misc.update / Misc.update_idletasks
    * to yield. Those are "flush pending events" not "show now" -- the
@@ -442,6 +506,7 @@ def _emx11_drain(max_n=256):
     return n
 `);
   const drain = py.runPython(`_emx11_drain`) as (max: number) => number;
+  drainRef = drain;
 
   /* --- Stage: settle ---
    *
@@ -461,23 +526,22 @@ def _emx11_drain(max_n=256):
     logToMain(`settle: still draining after ${SETTLE_MAX_PASSES} passes; starting pump anyway`);
   }
 
-  /* --- Stage: long-running pump ---
+  /* --- Stage: hand off to event-driven pump ---
    *
-   * One drain per setTimeout tick. Stops itself if the interpreter is
-   * gone (root.destroy() or unrecoverable Tcl error) -- otherwise we'd
-   * keep ccall'ing into a dead interp and flood main with errors.
+   * From here on, the pump only runs when something signals it:
+   *   - libemx11 notifier setTimerProc -> onTimer(ms) -> scheduled wake
+   *     at exactly the Tcl deadline (cursor blink, animation frame,
+   *     after-callback). Mirrors a real X client's select() timeout.
+   *   - libemx11 notifier alertNotifierProc -> onAlert -> immediate wake.
+   *   - main-thread input messages -> wakePump() -> immediate wake.
+   *
+   * If none of those fire, the worker is idle: no setTimeout pending,
+   * no rAF, no polling. The JS engine parks the thread and CPU is 0,
+   * exactly like a Linux X11 client blocked in select().
+   *
+   * Kick off one final drain so any events queued during settle but
+   * after the last pass (or any input messages that landed before
+   * drain was bound) flow through.
    */
-  let pumpStopped = false;
-  function pump(): void {
-    if (pumpStopped) return;
-    try {
-      drain(256);
-    } catch (err) {
-      pumpStopped = true;
-      logToMain(`pump stopped: ${String((err as Error)?.message ?? err)}`);
-      return;
-    }
-    setTimeout(pump, 8);
-  }
-  setTimeout(pump, 0);
+  requestPump();
 }
