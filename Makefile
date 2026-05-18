@@ -192,13 +192,26 @@ smoke-tcl: libtcl-so
 	cd $(SMOKE_DIR) && node smoke_tcl.js
 
 # ---- em-x11 (libemx11.so) ----------------------------------------------
-# Build em-x11's existing static archive (emx11_static target) under our
-# wasm-EH flags, then relink as a SIDE_MODULE the same way we do libtcl /
-# libtk. CMake's Emscripten toolchain silently downgrades SHARED targets
-# to static archives, so going via the static path + manual relink is
+# em-x11 now builds as 5 split archives (libX11.a / libXext.a /
+# libXrender.a / libfontconfig.a / libXft.a) so demos and downstream
+# consumers can use standard `-lX11 -lXft -lXrender ...` linking. For
+# our side-module path we still need everything in one .so (Pyodide
+# dlopens exactly one file), so we --whole-archive all five into a
+# single libemx11.so. The GLX archive is excluded -- _tkinter doesn't
+# use OpenGL and pulling glx.c in would also drag the legacy GL
+# emulation entry points into the dlopen graph.
+#
+# CMake's Emscripten toolchain silently downgrades SHARED targets to
+# static archives, so going via the static path + manual relink is
 # the only reliable route.
 
 EMX11_BUILD = $(BUILD)/em-x11
+EMX11_ARCHIVES = \
+	$(EMX11_BUILD)/libX11.a \
+	$(EMX11_BUILD)/libXext.a \
+	$(EMX11_BUILD)/libXrender.a \
+	$(EMX11_BUILD)/libfontconfig.a \
+	$(EMX11_BUILD)/libXft.a
 
 $(EMX11_BUILD)/CMakeCache.txt:
 	mkdir -p $(EMX11_BUILD)
@@ -207,17 +220,28 @@ $(EMX11_BUILD)/CMakeCache.txt:
 		-DEMX11_HIDE_INTERNAL_SYMBOLS=OFF \
 		-DCMAKE_C_FLAGS="$(WASMEH) -fPIC"
 
-$(EMX11_BUILD)/libemx11.a: $(EMX11_BUILD)/CMakeCache.txt
-	cd $(EMX11_BUILD) && emmake make -j emx11_static
+# CMake emits the archives under $(EMX11_BUILD); we touch a sentinel so
+# the side-module rule has a single OOD trigger to depend on.
+$(EMX11_BUILD)/.archives.stamp: $(EMX11_BUILD)/CMakeCache.txt
+	cd $(EMX11_BUILD) && emmake make -j X11 Xext Xrender fontconfig Xft
+	touch $@
 
-$(LIBDIR)/libemx11.so: $(EMX11_BUILD)/libemx11.a $(LIBDIR)/libtcl8.6.so
+$(EMX11_ARCHIVES): $(EMX11_BUILD)/.archives.stamp
+
+$(LIBDIR)/libemx11.so: $(EMX11_BUILD)/.archives.stamp $(LIBDIR)/libtcl8.6.so
 	mkdir -p $(LIBDIR)
-	cp $(EMX11_BUILD)/libemx11.a $(LIBDIR)/
+	cp $(EMX11_ARCHIVES) $(LIBDIR)/
 	# Link libtcl8.6.so so it lands on libemx11's NEEDED entry. Pyodide's
 	# loadDynlib hard-codes flags=2; the only way our notifier's
 	# Tcl_SetNotifier ref resolves at dlopen time is via NEEDED auto-cascade.
 	emcc $(SIDE_LDFLAGS) -o $(LIBDIR)/libemx11.so \
-		-Wl,--whole-archive $(LIBDIR)/libemx11.a -Wl,--no-whole-archive \
+		-Wl,--whole-archive \
+		$(LIBDIR)/libX11.a \
+		$(LIBDIR)/libXext.a \
+		$(LIBDIR)/libXrender.a \
+		$(LIBDIR)/libfontconfig.a \
+		$(LIBDIR)/libXft.a \
+		-Wl,--no-whole-archive \
 		$(LIBDIR)/libtcl8.6.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
