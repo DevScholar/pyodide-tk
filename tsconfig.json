@@ -16,7 +16,6 @@
 
     "types": ["vite/client", "node"],
 
-    "baseUrl": ".",
     "paths": {
       "@emx11/*": ["../em-x11/src/*"]
     }
