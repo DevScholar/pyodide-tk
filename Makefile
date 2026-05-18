@@ -136,6 +136,7 @@ $(BUILD)/tk/unix/Makefile: $(BUILD)/tk/unix/configure $(LIBDIR)/libtcl8.6.a
 		EMX11_LIBDIR="$(LIBDIR)" \
 		ac_cv_lib_Xft_XftFontOpen=yes \
 		ac_cv_lib_fontconfig_FcFontSort=no \
+		ac_cv_lib_X11_XkbKeycodeToKeysym=yes \
 		cross_compiling=yes \
 		emconfigure ./configure \
 		--host=wasm32-unknown-emscripten \
