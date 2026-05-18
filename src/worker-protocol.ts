@@ -50,6 +50,9 @@ export type MouseRelay = MouseDownRelay | MouseUpRelay | MouseMoveRelay;
 export interface KeyRelay {
   type: 'keydown' | 'keyup';
   keysym: number;
+  /** Physical key from KeyboardEvent.code mapped to evdev keycode.
+   *  Stable across keyboard layouts; 0 for synthetic / unmapped keys. */
+  keycode: number;
   modifiers: number;
   hasFocus: boolean;
   /** UTF-8 string the browser produced for this key (KeyboardEvent.key
@@ -107,7 +110,37 @@ export type ImeControlMessage =
   | ImeSpotMessage
   | ImePositionHintMessage;
 
-export type WorkerInboundMessage = InitMessage | MouseRelay | KeyRelay | TextKeyRelay;
+/** main → worker: pre-fetched clipboard bytes ahead of a Ctrl+V /
+ *  Shift+Insert keydown or a document `paste` event. Worker stores them
+ *  in `globalThis.__emx11ClipboardBytes` so libemx11's synchronous
+ *  emx11_js_clipboard_read_{begin,fetch} bridges find data when Tk
+ *  asks. See em-x11/src/host/devices.ts for the main-thread analogue
+ *  in DOM mode. */
+export interface ClipboardStageMessage {
+  type: 'clipboardStage';
+  /** UTF-8 bytes encoded from the OS clipboard string. Pass an empty
+   *  array to clear a stale staged value (when read permission was
+   *  denied or the user pressed a non-paste key after staging). */
+  bytes: Uint8Array;
+}
+
+/** worker → main: Tk wrote to CLIPBOARD; main should mirror to the
+ *  OS clipboard via navigator.clipboard.writeText(). The worker
+ *  context can't reliably call writeText (no user activation crossing
+ *  the boundary). */
+export interface ClipboardWriteMessage {
+  type: 'clipboardWrite';
+  /** UTF-8 encoded text. main converts via TextDecoder before
+   *  writeText. */
+  bytes: Uint8Array;
+}
+
+export type WorkerInboundMessage =
+  | InitMessage
+  | MouseRelay
+  | KeyRelay
+  | TextKeyRelay
+  | ClipboardStageMessage;
 
 export interface LogMessage { type: 'log'; line: string; }
 export interface ReadyMessage { type: 'ready'; }
@@ -117,4 +150,5 @@ export type WorkerOutboundMessage =
   | LogMessage
   | ReadyMessage
   | ErrorMessage
-  | ImeControlMessage;
+  | ImeControlMessage
+  | ClipboardWriteMessage;

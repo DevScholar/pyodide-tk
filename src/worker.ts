@@ -63,6 +63,9 @@ ctx.addEventListener('message', (ev: MessageEvent<WorkerInboundMessage>) => {
     case 'textKey':
       onTextKey(msg);
       break;
+    case 'clipboardStage':
+      onClipboardStage(msg.bytes);
+      break;
   }
 });
 
@@ -81,9 +84,9 @@ function onMouse(m: MouseRelay): void {
 function onKey(k: KeyRelay): void {
   if (!emX11) return;
   if (k.type === 'keydown') {
-    emX11.display.inject.keyDown({ keysym: k.keysym, modifiers: k.modifiers, hasFocus: k.hasFocus, text: k.text });
+    emX11.display.inject.keyDown({ keysym: k.keysym, keycode: k.keycode, modifiers: k.modifiers, hasFocus: k.hasFocus, text: k.text });
   } else {
-    emX11.display.inject.keyUp({ keysym: k.keysym, modifiers: k.modifiers, hasFocus: k.hasFocus, text: k.text });
+    emX11.display.inject.keyUp({ keysym: k.keysym, keycode: k.keycode, modifiers: k.modifiers, hasFocus: k.hasFocus, text: k.text });
   }
   wakePump();
 }
@@ -92,6 +95,19 @@ function onTextKey(t: TextKeyRelay): void {
   if (!emX11 || !t.text) return;
   emX11.display.inject.textKey(t.text);
   wakePump();
+}
+
+/** main → worker: clipboard bytes pre-fetched ahead of a paste action.
+ *  libemx11's emx11_js_clipboard_read_begin reads
+ *  globalThis.__emx11ClipboardBytes synchronously from this realm; the
+ *  main thread can't touch the worker's globalThis so it has to relay
+ *  via postMessage. */
+function onClipboardStage(bytes: Uint8Array): void {
+  /* Defensive copy: the Uint8Array we receive may be backed by a
+   * transferred buffer; libemx11 wants to mutate / null-out the cache
+   * via _fetch, and the buffer must outlive the postMessage frame. */
+  (globalThis as { __emx11ClipboardBytes?: Uint8Array | null }).__emx11ClipboardBytes =
+    bytes && bytes.byteLength > 0 ? new Uint8Array(bytes) : null;
 }
 
 /* The pump's adaptive scheduler is installed by boot() once `drain` is
@@ -178,6 +194,23 @@ async function boot(
         post({ type: 'imePositionHint', absX, absY }),
     },
   });
+
+  /* Tk wrote to CLIPBOARD: libemx11's emx11_js_clipboard_write_utf8
+   * looks for `clipboardWriteRemote` on the bridge facade and routes
+   * through it when set. Worker realm has no reliable
+   * navigator.clipboard.writeText (no user activation across the
+   * thread boundary), so we post the bytes back to main where the
+   * DOM holds the permission. */
+  const bridgeFacade = (globalThis as { emX11?: { _bridge?: { clipboardWriteRemote?: (b: Uint8Array) => void } } }).emX11;
+  if (bridgeFacade?._bridge) {
+    bridgeFacade._bridge.clipboardWriteRemote = (bytes: Uint8Array) => {
+      /* Copy the bytes before posting; libemx11 reuses its source
+       * buffer (HEAPU8 view) and the postMessage frame must own a
+       * stable snapshot. */
+      const snapshot = new Uint8Array(bytes);
+      post({ type: 'clipboardWrite', bytes: snapshot });
+    };
+  }
 
   /* Install the Tcl notifier wake target. libemx11's notifier.c
    * (real_SetTimer / real_AlertNotifier) forwards Tcl's standardised

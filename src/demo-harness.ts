@@ -13,7 +13,7 @@
  * accumulate workers (each pumping Tcl forever) and zombie listeners.
  */
 
-import { keyEventToKeysym, modifiersFromEvent } from '@emx11/runtime/keymap.js';
+import { keyEventToKeysym, keyEventToKeycode, modifiersFromEvent } from '@emx11/runtime/keymap.js';
 import { createDomTextInputBridge } from '@emx11/index.js';
 import type {
   WorkerInboundMessage,
@@ -119,6 +119,17 @@ export function runDemo(opts: RunDemoOptions): DemoHandle {
       case 'imePositionHint':
         ime.applyPosition(msg.absX, msg.absY);
         break;
+      case 'clipboardWrite': {
+        /* Tk copied bytes via XSetSelectionOwner(CLIPBOARD); libemx11's
+         * write bridge forwarded them here because the worker can't
+         * reliably call navigator.clipboard.writeText. The DOM main
+         * thread holds the permission. */
+        const text = new TextDecoder('utf-8').decode(msg.bytes);
+        navigator.clipboard?.writeText(text).catch((err) => {
+          note('clipboard write failed:', String(err));
+        });
+        break;
+      }
     }
   }, { signal });
 
@@ -217,9 +228,33 @@ export function runDemo(opts: RunDemoOptions): DemoHandle {
   window.addEventListener('keydown', (e) => relayKey('keydown', e), { signal });
   window.addEventListener('keyup',   (e) => relayKey('keyup',   e), { signal });
 
+  /* Clipboard read staging: ahead of every paste-equivalent gesture
+   * (Ctrl+V / Cmd+V / Shift+Insert keydown, or a document `paste`),
+   * fetch the OS clipboard bytes on the main thread (where the
+   * navigator.clipboard permission lives) and post them to the worker
+   * BEFORE the keydown forwards. libemx11's
+   * emx11_js_clipboard_read_begin / _fetch in the worker realm then
+   * find data when Tk's XConvertSelection synchronously asks for it.
+   *
+   * Document `paste` carries the bytes inline via ClipboardEvent
+   * (no permission prompt), so we forward those whenever they fire.
+   * Ctrl+V via keydown needs an async readText(); we forward the
+   * key only after the stage message has been queued so the order
+   * is preserved by the worker's message handler. */
+  document.addEventListener('paste', (ev) => {
+    const text = (ev as ClipboardEvent).clipboardData?.getData('text/plain');
+    if (typeof text === 'string') {
+      worker.postMessage({
+        type: 'clipboardStage',
+        bytes: new TextEncoder().encode(text),
+      });
+    }
+  }, { signal });
+
   function relayKey(type: 'keydown' | 'keyup', e: KeyboardEvent): void {
     const keysym = keyEventToKeysym(e);
-    if (keysym === 0) return;
+    const keycode = keyEventToKeycode(e);
+    if (keysym === 0 && keycode === 0) return;
     /* Either the canvas itself or the IME bridge's hidden textarea
      * counts as "focused on the X surface" for keyboard routing. The
      * textarea steals DOM focus only while a Tk entry/text widget is
@@ -238,7 +273,40 @@ export function runDemo(opts: RunDemoOptions): DemoHandle {
      * shortcuts) drop their text -- the keysym path stays. Mirrors
      * em-x11's main-thread keyboard handler in host/devices.ts. */
     const text = e.key.length === 1 ? e.key : '';
-    send({ type, keysym, modifiers: modifiersFromEvent(e), hasFocus, text });
+    /* Ctrl+V / Cmd+V / Shift+Insert: stage the clipboard bytes into
+     * the worker BEFORE relaying the keydown. async readText() means
+     * we have to defer the key forward; Tk processes the paste on its
+     * next pump tick by which point the stage message is in the
+     * worker queue ahead of the keydown. The dispatch fires
+     * unconditionally on resolve OR reject so a denied permission
+     * doesn't swallow the keystroke. Mirrors the main-thread DOM
+     * path in em-x11/src/host/devices.ts. */
+    if (type === 'keydown' && hasFocus && isPasteCombo(e) &&
+        navigator.clipboard?.readText) {
+      void navigator.clipboard.readText()
+        .then((clip) => {
+          worker.postMessage({
+            type: 'clipboardStage',
+            bytes: new TextEncoder().encode(clip),
+          });
+        })
+        .catch(() => { /* permission denied -- no stage, key still goes */ })
+        .finally(() => {
+          send({ type, keysym, keycode, modifiers: modifiersFromEvent(e), hasFocus, text });
+        });
+      return;
+    }
+    send({ type, keysym, keycode, modifiers: modifiersFromEvent(e), hasFocus, text });
+  }
+
+  /** Ctrl+V / Cmd+V / Shift+Insert detector. KeyboardEvent.code is
+   *  layout-independent for the V key; we accept either ctrl OR meta
+   *  to cover Linux/Windows/macOS conventions. Mirrors the helper of
+   *  the same name in em-x11/src/host/devices.ts. */
+  function isPasteCombo(e: KeyboardEvent): boolean {
+    if (e.code === 'KeyV' && (e.ctrlKey || e.metaKey)) return true;
+    if (e.code === 'Insert' && e.shiftKey) return true;
+    return false;
   }
 
   /* Vite HMR: when this module is replaced, tear down the previous run
