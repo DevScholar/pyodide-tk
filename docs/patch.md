@@ -182,13 +182,20 @@ MEMFS at runtime; this is asset packaging, not a CPython patch.
 
 ## em-x11 side-module relink
 
-em-x11 already builds `libemx11.a` (see em-x11 docs). pyodide-tk
-rebuilds it under the same wasm-EH `-fPIC` flags and relinks:
+em-x11 ships as six standard X11 archives (`libX11.a`, `libXext.a`,
+`libXrender.a`, `libfontconfig.a`, `libXft.a`, `libGLX.a`; see
+em-x11 docs). pyodide-tk rebuilds them under the same wasm-EH
+`-fPIC` flags and `--whole-archive`s the five non-GLX archives into
+a single side module (GLX is excluded — `_tkinter` doesn't use
+OpenGL and pulling `glx.c` in would drag the legacy GL emulation
+entry points into the dlopen graph):
 
 ```
 emcc -sSIDE_MODULE=1 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm \
     -o libemx11.so \
-    -Wl,--whole-archive libemx11.a -Wl,--no-whole-archive \
+    -Wl,--whole-archive \
+    libX11.a libXext.a libXrender.a libfontconfig.a libXft.a \
+    -Wl,--no-whole-archive \
     libtcl8.6.so \
     -sERROR_ON_UNDEFINED_SYMBOLS=0
 ```
