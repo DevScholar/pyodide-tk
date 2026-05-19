@@ -21,24 +21,24 @@ below document those deltas so they can be reproduced and audited.
 | Tk 8.6.15        | tk8.6.15-src            | none           | em-x11 X11 headers, fontconfig disabled, `--disable-xss`, side-module relink |
 | CPython 3.14.2 `_tkinter` | Modules/_tkinter.c | none   | side-module compile against em-x11 + Pyodide xbuildenv `Python.h` |
 | em-x11           | sibling repo            | none           | rebuilt under wasm-EH `-fPIC`, relinked to `libemx11.so` with NEEDED entry |
-| `::wacl::*` cmds | `../wacl-tk/opt/wacl.c` | none           | sibling source compiled as `libwacl.so` side module; `Wacl_Init(interp)` invoked via ctypes on every `tkinter.Tk()` |
+| `::tcldide::*` cmds | `../tcldide/opt/tcldide.c` | none           | sibling source compiled as `libtcldide.so` side module; `Tcldide_Init(interp)` invoked via ctypes on every `tkinter.Tk()` |
 | `tkinter` Python | stdlib `Lib/tkinter`    | none           | runtime monkey-patches in worker prelude (`Misc.after`, `Misc.mainloop`, `tkinter.mainloop`, `Misc.quit`, `Tk.__init__`) — see "Runtime Python prelude patches" below |
 
-Contrast with the sibling [wacl-tk](../../wacl-tk/docs/patch.md),
-which inherits a Tcl source patch from the upstream wacl project.
+Contrast with the sibling [tcldide](../../tcldide/docs/patch.md),
+which inherits a Tcl source patch from the upstream tcldide project.
 pyodide-tk did not need that patch because its targets differ:
 
 - Pyodide ships a known-good emscripten libc, so the `strstr` /
-  `strtoul` / `strtod` runtime probes that wacl deletes are bypassed
+  `strtoul` / `strtod` runtime probes that tcldide deletes are bypassed
   via `cross_compiling=yes` plus the same
   `tcl_cv_str{toul,str}_unbroken=ok` / `ac_cv_func_strtoul=yes`
-  cv overrides wacl-tk uses, instead of patching the source.
+  cv overrides tcldide uses, instead of patching the source.
 - The `tclUnixChan.c` / `tclUnixNotfy.c` `exceptfds` assertion that
-  wacl works around does not fire in the wasm-EH build path used
+  tcldide works around does not fire in the wasm-EH build path used
   here, since the notifier we end up using is em-x11's, not Tcl's
   default `select()` notifier.
 - We do not embed extra C sources into `libtcl` — Pyodide's loader
-  composes side modules at dlopen time, so the wacl `opt/wacl.c`
+  composes side modules at dlopen time, so the tcldide `opt/tcldide.c`
   injection point is unnecessary.
 
 ## Tcl 8.6.15 (build-level only)
@@ -66,7 +66,7 @@ Key choices:
   dlopen.
 - `-fPIC` is mandatory for `-sSIDE_MODULE=1` relink.
 - `--disable-threads --disable-load --disable-shared` — same
-  rationale as wacl-tk.
+  rationale as tcldide.
 - `ac_cv_have_intrinsic_cpuid=no` — wasm32 has no GNU/x86 cpuid
   intrinsic; preempt the feature probe.
 - `ac_cv_func_strtoul=yes` and
@@ -114,12 +114,12 @@ emconfigure ./configure \
     --disable-xss \
     CFLAGS="…" LDFLAGS="…"
 ```
-Same em-x11 redirection trick wacl-tk uses: real `X11/*.h` headers
+Same em-x11 redirection trick tcldide uses: real `X11/*.h` headers
 come from em-x11, but no Xlib `.so` is supplied — Tk's unresolved
 X11 symbols stay in the archive and are linked against
 `libemx11.so` at the side-module relink step.
 
-Differences from wacl-tk's Tk configure:
+Differences from tcldide's Tk configure:
 - **`--disable-xss`** is passed explicitly. em-x11 stubs the
   XScreenSaver entry points, but at this build's snapshot Tk's
   feature detection picks them up incorrectly under
@@ -219,7 +219,7 @@ silently exposes stale `.so`s — a common debugging trap.
 
 ## Why no source patch was needed
 
-The two Tcl-source issues that motivate wacl-tk's `wacl.patch` are
+The two Tcl-source issues that motivate tcldide's `tcldide.patch` are
 both side-stepped here:
 
 1. **Runtime autoconf probes** — bypassed by `cross_compiling=yes`
@@ -231,84 +231,84 @@ both side-stepped here:
 
 If a future Tcl/Tk version regresses one of these assumptions, the
 fix should land here as a `.patch` file applied during `tclprep`/
-`tkprep`, mirroring wacl-tk's structure.
+`tkprep`, mirroring tcldide's structure.
 
-## libwacl side module
+## libtcldide side module
 
-`libwacl.so` is built from the **sibling** [`../wacl-tk/opt/wacl.c`](../../wacl-tk/opt/wacl.c)
+`libtcldide.so` is built from the **sibling** [`../tcldide/opt/tcldide.c`](../../tcldide/opt/tcldide.c)
 (single source of truth — no copy). It contributes two Tcl commands
 to every interpreter:
 
-- **`::wacl::dom action selector key val`** — query `document` via
+- **`::tcldide::dom action selector key val`** — query `document` via
   `EM_ASM_INT`, run `querySelectorAll(selector)`, set
   `attr` or `style.{key} = val` on each match. Returns the count
   of elements changed.
-- **`::wacl::jscall fcnPtr returnType argType ?args…?`** — invoke a
+- **`::tcldide::jscall fcnPtr returnType argType ?args…?`** — invoke a
   function pointer (e.g. obtained via `Module.addFunction`) with the
   declared C signature, passing arguments coerced from Tcl through
   the listed type tags.
 
 ### Build
 ```make
-WACL_SRC = $(CURDIR)/../wacl-tk/opt/wacl.c
+TCLDIDE_SRC = $(CURDIR)/../tcldide/opt/tcldide.c
 
-$(LIBDIR)/libwacl.so: $(WACL_SRC) $(LIBDIR)/libtcl8.6.so
+$(LIBDIR)/libtcldide.so: $(TCLDIDE_SRC) $(LIBDIR)/libtcl8.6.so
     emcc -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -fPIC -sSIDE_MODULE=1 \
         -I $(INCDIR) \
-        $(WACL_SRC) $(LIBDIR)/libtcl8.6.so \
+        $(TCLDIDE_SRC) $(LIBDIR)/libtcl8.6.so \
         -sERROR_ON_UNDEFINED_SYMBOLS=0 \
-        -o $(LIBDIR)/libwacl.so
+        -o $(LIBDIR)/libtcldide.so
 ```
 
-`libtcl8.6.so` is on the link line so libwacl's references to
+`libtcl8.6.so` is on the link line so libtcldide's references to
 `Tcl_CreateNamespace`, `Tcl_CreateObjCommand`, etc. land on
-libwacl's NEEDED entry — Pyodide's `loadDynlib` then auto-cascades
+libtcldide's NEEDED entry — Pyodide's `loadDynlib` then auto-cascades
 the dependency.
 
 ### Runtime wiring (worker.ts)
 
-Loaded globally so its `Wacl_Init` symbol is reachable via ctypes:
+Loaded globally so its `Tcldide_Init` symbol is reachable via ctypes:
 ```ts
-await py._api.loadDynlib('/usr/lib/libwacl.so', { global: true, allowUndefined: true });
+await py._api.loadDynlib('/usr/lib/libtcldide.so', { global: true, allowUndefined: true });
 ```
 
 Then a Python prelude monkey-patches `tkinter.Tk.__init__` so every
-new root automatically registers `::wacl::*`:
+new root automatically registers `::tcldide::*`:
 ```python
 import ctypes, tkinter
-_wacl = ctypes.CDLL('/usr/lib/libwacl.so')
-_wacl.Wacl_Init.argtypes = [ctypes.c_void_p]
-_wacl.Wacl_Init.restype  = ctypes.c_int
+_tcldide = ctypes.CDLL('/usr/lib/libtcldide.so')
+_tcldide.Tcldide_Init.argtypes = [ctypes.c_void_p]
+_tcldide.Tcldide_Init.restype  = ctypes.c_int
 _orig = tkinter.Tk.__init__
 def _install(self, *a, **kw):
     _orig(self, *a, **kw)
-    _wacl.Wacl_Init(self.tk.interpaddr())
+    _tcldide.Tcldide_Init(self.tk.interpaddr())
 tkinter.Tk.__init__ = _install
 ```
 
 The `tkapp.interpaddr()` call returns the underlying `Tcl_Interp*`,
-and `Wacl_Init` registers its commands on that interpreter. Demo
+and `Tcldide_Init` registers its commands on that interpreter. Demo
 code can then use them straight from `root.tk.call(...)` or, more
 typically, via `root.tk.eval(...)`:
 ```python
 root = tkinter.Tk()
-root.tk.call('::wacl::dom', 'css', '#status', 'color', 'red')
+root.tk.call('::tcldide::dom', 'css', '#status', 'color', 'red')
 ```
 
 ### Optional dependency
 
 Both the build (`Makefile`) and the worker (`worker.ts`) tolerate a
-missing libwacl: `make` aborts with a clear message if
-`../wacl-tk/opt/wacl.c` isn't present, and the worker's fetch is
+missing libtcldide: `make` aborts with a clear message if
+`../tcldide/opt/tcldide.c` isn't present, and the worker's fetch is
 wrapped in `.catch(() => null)` so a missing
-`pyodide-tk-assets/lib/libwacl.so` skips the dynlib load and leaves
+`pyodide-tk-assets/lib/libtcldide.so` skips the dynlib load and leaves
 `tkinter.Tk` untouched. Standard tkinter still works in either case;
-only `::wacl::dom` / `::wacl::jscall` become unavailable.
+only `::tcldide::dom` / `::tcldide::jscall` become unavailable.
 
 ### Why a side module instead of patching CPython's tkappinit.c
 
 `Modules/tkappinit.c` is the natural hook for "run something after
-`Tcl_Init`". Putting `Wacl_Init` there would make the bridge
+`Tcl_Init`". Putting `Tcldide_Init` there would make the bridge
 automatic with no Python prelude. We chose the side-module route
 to preserve the project's no-source-patch invariant — `_tkinter.c`
 and `tkappinit.c` remain literally byte-identical to upstream
@@ -335,13 +335,13 @@ The worker also installs a JS-side pair to back the prelude:
   JS-side adaptive pump (`runDrain`) so it does not race the
   Python-side mainloop on `dooneevent`.
 
-### `tkinter.Tk.__init__` — auto-register `::wacl::*`
+### `tkinter.Tk.__init__` — auto-register `::tcldide::*`
 
 **Patch shape.** Wrap `Tk.__init__` so every new root, immediately
-after the original constructor returns, gets `Wacl_Init(interp)`
+after the original constructor returns, gets `Tcldide_Init(interp)`
 called on its underlying `Tcl_Interp*` via `ctypes.CDLL`.
 
-**Why.** `libwacl.so` exposes the `::wacl::dom` and `::wacl::jscall`
+**Why.** `libtcldide.so` exposes the `::tcldide::dom` and `::tcldide::jscall`
 Tcl commands. Stock CPython has no place to register them between
 `Tcl_Init` and the first Python-visible Tcl call; doing it in
 `_tkinter.c`'s `tkappinit.c` would require a source patch we
@@ -349,10 +349,10 @@ explicitly forbid (see "Why a side module instead of patching
 CPython's tkappinit.c" above). Hooking `Tk.__init__` from Python is
 the smallest equivalent.
 
-**Failure mode.** If `libwacl.so` isn't shipped (sibling wacl-tk not
+**Failure mode.** If `libtcldide.so` isn't shipped (sibling tcldide not
 built), the `ctypes.CDLL` call raises `OSError`; the patch swallows
 it and leaves `Tk.__init__` untouched. Plain tkinter still works,
-`::wacl::*` just isn't registered.
+`::tcldide::*` just isn't registered.
 
 ### `tkinter.Misc.after(ms)` (no-callback form) — yield via JSPI
 
@@ -461,7 +461,7 @@ ABI / version-bump comparisons against upstream, and (b) make the
 patches invisible to anyone reading `worker.ts` to understand the
 runtime. Keeping them as a prelude string means everything that
 makes pyodide-tk's `tkinter` behave the way it does — the
-yielding `after`, the blocking-but-shallow mainloop, the wacl
+yielding `after`, the blocking-but-shallow mainloop, the tcldide
 auto-install — is reachable from one place. The cost is that a
 demo that does `del tkinter.Misc.mainloop` could regress to the
 default `Tkapp_MainLoop` (which would wedge the worker); we accept

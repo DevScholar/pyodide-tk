@@ -333,7 +333,7 @@ async function boot(
     libtcl:    fetchAB(`${A}/lib/libtcl8.6.so`),
     libtk:     fetchAB(`${A}/lib/libtk8.6.so`),
     libemx11:  fetchAB(`${A}/lib/libemx11.so`),
-    libwacl:   fetchOptional(`${A}/lib/libwacl.so`),
+    libtcldide:   fetchOptional(`${A}/lib/libtcldide.so`),
     tkinterSo: fetchAB(`${A}/lib/_tkinter.so`),
     turtle:    fetchAB(`${A}/turtle.py`),
     tclLib:    fetchAB(`${A}/tcl-library.tar`),
@@ -376,10 +376,10 @@ async function boot(
   py.FS.mkdirTree('/usr/lib');
   py.FS.mkdirTree('/lib/python3.14/site-packages');
   const [
-    libtclBuf, libtkBuf, libemx11Buf, libwaclBuf, tkinterSoBuf,
+    libtclBuf, libtkBuf, libemx11Buf, libtcldideBuf, tkinterSoBuf,
     turtleBuf, tclLibBuf, tkLibBuf, tkinterTarBuf,
   ] = await Promise.all([
-    pending.libtcl, pending.libtk, pending.libemx11, pending.libwacl, pending.tkinterSo,
+    pending.libtcl, pending.libtk, pending.libemx11, pending.libtcldide, pending.tkinterSo,
     pending.turtle, pending.tclLib, pending.tkLib, pending.tkinterTar,
   ]);
   const writeFromBuf = (buf: ArrayBuffer, memPath: string): void => {
@@ -388,7 +388,7 @@ async function boot(
   writeFromBuf(libtclBuf,    '/usr/lib/libtcl8.6.so');
   writeFromBuf(libtkBuf,     '/usr/lib/libtk8.6.so');
   writeFromBuf(libemx11Buf,  '/usr/lib/libemx11.so');
-  if (libwaclBuf) writeFromBuf(libwaclBuf, '/usr/lib/libwacl.so');
+  if (libtcldideBuf) writeFromBuf(libtcldideBuf, '/usr/lib/libtcldide.so');
   writeFromBuf(tkinterSoBuf, '/lib/python3.14/site-packages/_tkinter.so');
   /* turtle is a single-file stdlib module that imports tkinter; Pyodide
    * strips it from python_stdlib.zip alongside tkinter, so we stage the
@@ -441,12 +441,12 @@ async function boot(
 
   await pyi.loadDynlib('/lib/python3.14/site-packages/_tkinter.so', { global: false });
 
-  /* libwacl: ::wacl::dom and ::wacl::jscall Tcl commands. Loaded
-   * globally so its Wacl_Init export is reachable via ctypes.CDLL.
-   * Optional -- if the .so is missing (sibling wacl-tk not built),
+  /* libtcldide: ::tcldide::dom and ::tcldide::jscall Tcl commands. Loaded
+   * globally so its Tcldide_Init export is reachable via ctypes.CDLL.
+   * Optional -- if the .so is missing (sibling tcldide not built),
    * we skip silently and the prelude below no-ops. */
-  if (libwaclBuf) {
-    await pyi.loadDynlib('/usr/lib/libwacl.so', { global: true });
+  if (libtcldideBuf) {
+    await pyi.loadDynlib('/usr/lib/libtcldide.so', { global: true });
   }
 
   /* --- Stage: worker-side Python prelude ---
@@ -517,25 +517,25 @@ async function boot(
 import tkinter, asyncio, js, ctypes
 from pyodide.ffi import run_sync, create_once_callable
 
-# wacl bridge: ::wacl::dom and ::wacl::jscall Tcl commands. The .so is
-# loaded globally above; bind Wacl_Init via ctypes and call it on every
+# tcldide bridge: ::tcldide::dom and ::tcldide::jscall Tcl commands. The .so is
+# loaded globally above; bind Tcldide_Init via ctypes and call it on every
 # Tk root immediately after construction so demos can use the commands
-# without any setup boilerplate. If libwacl wasn't shipped (sibling
-# wacl-tk not built), the CDLL load fails and we leave Tk.__init__
-# alone -- standard tkinter still works, ::wacl::* just isn't there.
+# without any setup boilerplate. If libtcldide wasn't shipped (sibling
+# tcldide not built), the CDLL load fails and we leave Tk.__init__
+# alone -- standard tkinter still works, ::tcldide::* just isn't there.
 try:
-    _wacl = ctypes.CDLL('/usr/lib/libwacl.so')
-    _wacl.Wacl_Init.argtypes = [ctypes.c_void_p]
-    _wacl.Wacl_Init.restype  = ctypes.c_int
-    _wacl_orig_tk_init = tkinter.Tk.__init__
-    def _wacl_install_on_tk(self, *a, **kw):
-        _wacl_orig_tk_init(self, *a, **kw)
+    _tcldide = ctypes.CDLL('/usr/lib/libtcldide.so')
+    _tcldide.Tcldide_Init.argtypes = [ctypes.c_void_p]
+    _tcldide.Tcldide_Init.restype  = ctypes.c_int
+    _tcldide_orig_tk_init = tkinter.Tk.__init__
+    def _tcldide_install_on_tk(self, *a, **kw):
+        _tcldide_orig_tk_init(self, *a, **kw)
         try:
-            _wacl.Wacl_Init(self.tk.interpaddr())
+            _tcldide.Tcldide_Init(self.tk.interpaddr())
         except Exception as e:
             import sys
-            print('wacl: Wacl_Init failed:', e, file=sys.stderr)
-    tkinter.Tk.__init__ = _wacl_install_on_tk
+            print('tcldide: Tcldide_Init failed:', e, file=sys.stderr)
+    tkinter.Tk.__init__ = _tcldide_install_on_tk
 except OSError:
     pass
 

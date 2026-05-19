@@ -45,11 +45,11 @@ SIDE_LDFLAGS = -sSIDE_MODULE=1 $(WASMEH)
 
 .PHONY: all tclprep tkprep tkinter clean distclean toolcheck smoke-tcl libtcl-so stage cpython-src
 
-all: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(LIBDIR)/libemx11.so $(LIBDIR)/libwacl.so $(TKINTER_OUT)/_tkinter.so stage
+all: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(LIBDIR)/libemx11.so $(LIBDIR)/libtcldide.so $(TKINTER_OUT)/_tkinter.so stage
 
 # Stage built artefacts into public/ so the vite dev server picks them up.
 # Folded into `all` so a fresh clone -> `make` -> `pnpm dev` just works.
-stage: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(LIBDIR)/libemx11.so $(LIBDIR)/libwacl.so $(TKINTER_OUT)/_tkinter.so
+stage: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(LIBDIR)/libemx11.so $(LIBDIR)/libtcldide.so $(TKINTER_OUT)/_tkinter.so
 	bash $(CURDIR)/scripts/stage-assets.sh
 
 # smoke-tcl needs an alias because the recipe doesn't reference the .so by path.
@@ -110,11 +110,11 @@ $(LIBDIR)/libtcl8.6.so: $(LIBDIR)/libtcl8.6.a
 		-Wl,--whole-archive $(LIBDIR)/libtcl8.6.a -Wl,--no-whole-archive
 
 # ---- Tk ----------------------------------------------------------------
-# Stock Tk 8.6 against em-x11's Xlib. Same trick as wacl-tk: --with-x
+# Stock Tk 8.6 against em-x11's Xlib. Same trick as tcldide: --with-x
 # uses real X11/*.h, but no Xlib.so to link against -- libtk.a will
 # carry unresolved Xlib symbols, resolved at libtk-so link time by
 # libemx11 (or as undefined symbols satisfied by the host JS bridge).
-# Disable optional deps wacl-tk also disables for the first cut.
+# Disable optional deps tcldide also disables for the first cut.
 
 $(BUILD)/$(TK_TARBALL):
 	mkdir -p $(BUILD)
@@ -305,25 +305,25 @@ $(TKINTER_OUT)/_tkinter.so: $(CPYTHON_SRC)/_tkinter.c $(LIBDIR)/libtk8.6.so $(LI
 		-sERROR_ON_UNDEFINED_SYMBOLS=0 \
 		-o $(TKINTER_OUT)/_tkinter.so
 
-# ---- libwacl.so --------------------------------------------------------
-# wacl-tk's ::wacl::dom and ::wacl::jscall Tcl commands, repackaged as a
+# ---- libtcldide.so --------------------------------------------------------
+# tcldide's ::tcldide::dom and ::tcldide::jscall Tcl commands, repackaged as a
 # Pyodide side module so Python tkinter code can drive the DOM straight
 # from Tcl (no `from js import …` round-trip). Source is the sibling
-# wacl-tk/opt/wacl.c -- single source of truth, no copy. The runtime
-# wires it up by ctypes-calling Wacl_Init(interp) on each tkinter.Tk()
+# tcldide/opt/tcldide.c -- single source of truth, no copy. The runtime
+# wires it up by ctypes-calling Tcldide_Init(interp) on each tkinter.Tk()
 # (see worker.ts prelude).
 #
 # libtcl8.6.so is on the link line so Tcl_CreateNamespace etc. land on
-# libwacl.so's NEEDED entry; loadDynlib's flags=2 then auto-cascades.
+# libtcldide.so's NEEDED entry; loadDynlib's flags=2 then auto-cascades.
 
-WACL_SRC = $(CURDIR)/../wacl-tk/opt/wacl.c
+TCLDIDE_SRC = $(CURDIR)/../tcldide/opt/tcldide.c
 
-$(LIBDIR)/libwacl.so: $(WACL_SRC) $(LIBDIR)/libtcl8.6.so
-	@test -f $(WACL_SRC) || \
-		(echo "wacl source missing at $(WACL_SRC) -- clone wacl-tk as a sibling dir"; exit 1)
+$(LIBDIR)/libtcldide.so: $(TCLDIDE_SRC) $(LIBDIR)/libtcl8.6.so
+	@test -f $(TCLDIDE_SRC) || \
+		(echo "tcldide source missing at $(TCLDIDE_SRC) -- clone tcldide as a sibling dir"; exit 1)
 	mkdir -p $(LIBDIR)
 	emcc $(WASMEH) $(SIDE_CC) -sSIDE_MODULE=1 \
 		-I $(INCDIR) \
-		$(WACL_SRC) $(LIBDIR)/libtcl8.6.so \
+		$(TCLDIDE_SRC) $(LIBDIR)/libtcl8.6.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0 \
-		-o $(LIBDIR)/libwacl.so
+		-o $(LIBDIR)/libtcldide.so

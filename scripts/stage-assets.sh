@@ -52,14 +52,14 @@ if [[ -d $PYNM ]]; then
     done
 fi
 
-# Side modules. libwacl is optional -- sibling wacl-tk might not be
+# Side modules. libtcldide is optional -- sibling tcldide might not be
 # built. Distinguish "file absent" (skip with a friendly note) from
 # "cp failed for any other reason" (real error, propagate via set -e).
 cp -u "$LIB"/libtcl8.6.so "$LIB"/libtk8.6.so "$LIB"/libemx11.so "$PUB/lib/"
-if [[ -f "$LIB/libwacl.so" ]]; then
-    cp -u "$LIB/libwacl.so" "$PUB/lib/"
+if [[ -f "$LIB/libtcldide.so" ]]; then
+    cp -u "$LIB/libtcldide.so" "$PUB/lib/"
 else
-    echo "  (libwacl.so missing -- ::wacl::dom / ::wacl::jscall unavailable)"
+    echo "  (libtcldide.so missing -- ::tcldide::dom / ::tcldide::jscall unavailable)"
 fi
 cp -u "$TKD"/_tkinter.so "$PUB/lib/"
 
