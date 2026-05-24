@@ -24,6 +24,7 @@ import type {
   WorkerOutboundMessage,
   MouseRelay,
   KeyRelay,
+  WheelRelay,
   TextKeyRelay,
 } from './worker-protocol.js';
 
@@ -60,6 +61,9 @@ ctx.addEventListener('message', (ev: MessageEvent<WorkerInboundMessage>) => {
     case 'keyup':
       onKey(msg);
       break;
+    case 'wheel':
+      onWheel(msg);
+      break;
     case 'textKey':
       onTextKey(msg);
       break;
@@ -88,6 +92,12 @@ function onKey(k: KeyRelay): void {
   } else {
     emX11.display.inject.keyUp({ keysym: k.keysym, keycode: k.keycode, modifiers: k.modifiers, hasFocus: k.hasFocus, text: k.text });
   }
+  wakePump();
+}
+
+function onWheel(w: WheelRelay): void {
+  if (!emX11) return;
+  emX11.display.inject.wheel({ x: w.x, y: w.y, deltaY: w.deltaY, modifiers: w.modifiers });
   wakePump();
 }
 

@@ -65,6 +65,14 @@ export interface KeyRelay {
 /** main → worker: composed/pasted text from the main-thread textarea
  *  bridge. Worker passes it to emX11.display.inject.textKey, which
  *  fires a synthetic KeyPress/KeyRelease pair carrying the bytes. */
+export interface WheelRelay {
+  type: 'wheel';
+  x: number;
+  y: number;
+  deltaY: number;
+  modifiers: number;
+}
+
 export interface TextKeyRelay {
   type: 'textKey';
   text: string;
@@ -139,6 +147,7 @@ export type WorkerInboundMessage =
   | InitMessage
   | MouseRelay
   | KeyRelay
+  | WheelRelay
   | TextKeyRelay
   | ClipboardStageMessage;
 

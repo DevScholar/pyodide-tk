@@ -220,6 +220,16 @@ export function runDemo(opts: RunDemoOptions): DemoHandle {
     });
   }, { signal });
 
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const { x, y } = cssPoint(e);
+    send({
+      type: 'wheel', x, y,
+      deltaY: (e as WheelEvent).deltaY,
+      modifiers: modifiersFromEvent(e),
+    });
+  }, { signal, passive: false });
+
   canvas.addEventListener('contextmenu', (e) => e.preventDefault(), { signal });
 
   // Keyboard-focusable so KeyboardEvents have a meaningful activeElement.

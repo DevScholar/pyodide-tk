@@ -6,6 +6,7 @@
 const demos = [
   { name: 'tk-hello', description: 'Minimal Tk: Label + Button with -command callback' },
   { name: 'turtle-hello', description: 'Stdlib turtle graphics on a Tk Canvas' },
+  { name: 'widget-gallery', description: 'Tk widget gallery: buttons, text, selection, containers, canvas' },
 ];
 
 const root = document.getElementById('app');

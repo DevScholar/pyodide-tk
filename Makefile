@@ -213,6 +213,19 @@ EMX11_ARCHIVES = \
 	$(EMX11_BUILD)/libfontconfig.a \
 	$(EMX11_BUILD)/libXft.a
 
+# Collect the em-x11 native source tree so the rebuild rule fires when any
+# .c or .h changes. Also depend on CMakeLists.txt so cmake reconfigures when
+# the build graph itself changes (new files, renamed sources, etc.).
+#
+# !!! IMPORTANT: the recipe uses `cmake --build`, NOT raw `emmake make`.
+# Without `cmake --build`, the inner cmake-generated Makefile is invoked
+# directly and cmake's reconfiguration step never fires -- stale dependency
+# info causes "changed source, but nothing recompiled" bugs. tcldide's
+# runtime/CMakeLists.txt uses the same `cmake --build` pattern for this
+# reason (see project_pyodide_tk_stage_assets memory).
+EMX11_NATIVE_SRC = $(shell find $(EMX11_DIR)/native -name '*.c' -o -name '*.h' 2>/dev/null)
+EMX11_CMAKE_SRC = $(wildcard $(EMX11_DIR)/native/CMakeLists.txt $(EMX11_DIR)/native/**/CMakeLists.txt)
+
 $(EMX11_BUILD)/CMakeCache.txt:
 	mkdir -p $(EMX11_BUILD)
 	cd $(EMX11_BUILD) && emcmake cmake $(EMX11_DIR)/native \
@@ -222,8 +235,8 @@ $(EMX11_BUILD)/CMakeCache.txt:
 
 # CMake emits the archives under $(EMX11_BUILD); we touch a sentinel so
 # the side-module rule has a single OOD trigger to depend on.
-$(EMX11_BUILD)/.archives.stamp: $(EMX11_BUILD)/CMakeCache.txt
-	cd $(EMX11_BUILD) && emmake make -j X11 Xext Xrender fontconfig Xft
+$(EMX11_BUILD)/.archives.stamp: $(EMX11_BUILD)/CMakeCache.txt $(EMX11_NATIVE_SRC) $(EMX11_CMAKE_SRC)
+	cd $(EMX11_BUILD) && cmake --build . --target X11 --target Xext --target Xrender --target fontconfig --target Xft
 	touch $@
 
 $(EMX11_ARCHIVES): $(EMX11_BUILD)/.archives.stamp
