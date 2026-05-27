@@ -8,9 +8,6 @@ importers:
 
   .:
     devDependencies:
-      '@types/emscripten':
-        specifier: ^1.39.10
-        version: 1.41.5
       '@types/node':
         specifier: ^20.11.0
         version: 20.19.39

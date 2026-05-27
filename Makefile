@@ -6,9 +6,15 @@ TKVERSION  ?= 8.6.15
 
 EMSCRIPTEN ?= $(HOME)/.local/lib/emsdk/upstream/emscripten
 
-# em-x11 supplies our Xlib (X11/*.h tree + later libemx11.so).
+# em-x11 supplies our Xlib (X11/*.h tree + split static archives). The
+# emscripten-ports script at tools/ports/emx11.py is the canonical way to
+# discover include paths (--use-port in compile flags) and archive paths
+# (--use-port in link flags). For the side-module path we still need the
+# raw .a files on disk for --whole-archive relinking, so we build em-x11's
+# native/ subset via cmake and copy the archives.
 EMX11_DIR      ?= $(CURDIR)/../em-x11
 EMX11_INCLUDES  = $(EMX11_DIR)/native/include
+EMX11_PORT      = $(EMX11_DIR)/tools/ports/emx11.py
 
 # CPython 3.14.2 source — needed for _tkinter.c. Either reuse the copy
 # pyodide-build's xbuildenv unpacks (`pyodide xbuildenv install 0.34.3`),
@@ -61,7 +67,10 @@ toolcheck:
 	@emcc --version | head -1
 	@test -d "$(EMX11_INCLUDES)/X11" || \
 		(echo "em-x11 headers not found at $(EMX11_INCLUDES)/X11"; exit 1)
+	@test -f "$(EMX11_PORT)" || \
+		(echo "em-x11 port script not found at $(EMX11_PORT)"; exit 1)
 	@echo "em-x11 X11 headers OK: $(EMX11_INCLUDES)/X11"
+	@echo "em-x11 port script OK: $(EMX11_PORT)"
 	@echo "BUILD=$(BUILD)"
 
 # ---- Tcl ---------------------------------------------------------------
@@ -192,18 +201,18 @@ smoke-tcl: libtcl-so
 	cd $(SMOKE_DIR) && node smoke_tcl.js
 
 # ---- em-x11 (libemx11.so) ----------------------------------------------
-# em-x11 now builds as 5 split archives (libX11.a / libXext.a /
-# libXrender.a / libfontconfig.a / libXft.a) so demos and downstream
-# consumers can use standard `-lX11 -lXft -lXrender ...` linking. For
-# our side-module path we still need everything in one .so (Pyodide
-# dlopens exactly one file), so we --whole-archive all five into a
-# single libemx11.so. The GLX archive is excluded -- _tkinter doesn't
-# use OpenGL and pulling glx.c in would also drag the legacy GL
-# emulation entry points into the dlopen graph.
+# em-x11 now ships as split archives (libX11.a / libXext.a / libXrender.a /
+# libfontconfig.a / libXft.a) plus the emscripten-ports script at
+# tools/ports/emx11.py that provides include paths and archive discovery.
+# For our side-module path we still need everything in one .so (Pyodide
+# dlopens exactly one file), so we --whole-archive all five into a single
+# libemx11.so. The GLX archive is excluded -- _tkinter doesn't use OpenGL
+# and pulling glx.c in would also drag the legacy GL emulation entry points
+# into the dlopen graph.
 #
-# CMake's Emscripten toolchain silently downgrades SHARED targets to
-# static archives, so going via the static path + manual relink is
-# the only reliable route.
+# We build em-x11's native/ via cmake (the port's _ensure_built builds the
+# full tree including third-party which we don't need). Archives land in
+# $(EMX11_BUILD)/; we copy them to $(LIBDIR)/ for the side-module relink.
 
 EMX11_BUILD = $(BUILD)/em-x11
 EMX11_ARCHIVES = \
@@ -236,7 +245,7 @@ $(EMX11_BUILD)/CMakeCache.txt:
 # CMake emits the archives under $(EMX11_BUILD); we touch a sentinel so
 # the side-module rule has a single OOD trigger to depend on.
 $(EMX11_BUILD)/.archives.stamp: $(EMX11_BUILD)/CMakeCache.txt $(EMX11_NATIVE_SRC) $(EMX11_CMAKE_SRC)
-	cd $(EMX11_BUILD) && cmake --build . --target X11 --target Xext --target Xrender --target fontconfig --target Xft
+	cd $(EMX11_BUILD) && cmake --build .
 	touch $@
 
 $(EMX11_ARCHIVES): $(EMX11_BUILD)/.archives.stamp
@@ -312,7 +321,8 @@ $(TKINTER_OUT)/_tkinter.so: $(CPYTHON_SRC)/_tkinter.c $(LIBDIR)/libtk8.6.so $(LI
 	emcc $(WASMEH) $(SIDE_CC) -sSIDE_MODULE=1 \
 		-DWITH_APPINIT=1 -DPy_BUILD_CORE_BUILTIN=1 \
 		-I $(PYINC) -I $(CPYTHON_SRC)/Include/internal -I $(CPYTHON_SRC) \
-		-I $(INCDIR) -I $(INCDIR)/tk -I $(EMX11_INCLUDES) \
+		-I $(INCDIR) -I $(INCDIR)/tk \
+		--use-port=$(EMX11_PORT) \
 		$(CPYTHON_SRC)/_tkinter.c $(CPYTHON_SRC)/tkappinit.c \
 		$(LIBDIR)/libtk8.6.so $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libemx11.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0 \

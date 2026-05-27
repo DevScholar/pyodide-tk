@@ -159,7 +159,8 @@ SIDE_MODULE.
 emcc -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -fPIC -sSIDE_MODULE=1 \
     -DWITH_APPINIT=1 -DPy_BUILD_CORE_BUILTIN=1 \
     -I $(PYINC) -I $(CPYTHON_SRC)/Include/internal -I $(CPYTHON_SRC) \
-    -I $(INCDIR) -I $(INCDIR)/tk -I $(EMX11_INCLUDES) \
+    -I $(INCDIR) -I $(INCDIR)/tk \
+    --use-port=$(EMX11_DIR)/tools/ports/emx11.py \
     _tkinter.c tkappinit.c \
     libtk8.6.so libtcl8.6.so libemx11.so \
     -sERROR_ON_UNDEFINED_SYMBOLS=0 \

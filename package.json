@@ -5,6 +5,7 @@
   "description": "Tcl/Tk + em-x11 + _tkinter as Pyodide-loadable side modules. Lets unmodified Python tkinter programs run in the browser.",
   "type": "module",
   "license": "MIT",
+  "packageManager": "pnpm@9.0.0",
   "engines": {
     "node": ">=20",
     "pnpm": ">=9"
