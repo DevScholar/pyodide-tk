@@ -143,6 +143,15 @@ export interface ClipboardWriteMessage {
   bytes: Uint8Array;
 }
 
+/** worker → main: resolved CSS cursor keyword from em-x11's cursor
+ *  inheritance walk. Sent on XDefineCursor / CWCursor change and on
+ *  every mouse move (the resolved cursor may change as the pointer
+ *  crosses windows). Main applies it to the visible canvas element. */
+export interface CursorChangeMessage {
+  type: 'cursorChange';
+  css: string;
+}
+
 export type WorkerInboundMessage =
   | InitMessage
   | MouseRelay
@@ -160,4 +169,5 @@ export type WorkerOutboundMessage =
   | ReadyMessage
   | ErrorMessage
   | ImeControlMessage
-  | ClipboardWriteMessage;
+  | ClipboardWriteMessage
+  | CursorChangeMessage;

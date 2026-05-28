@@ -222,6 +222,16 @@ async function boot(
     };
   }
 
+  /* Cursor bridge: em-x11's InputBridge.applyCursorFor() normally
+   * writes el.style.cursor on the canvas DOM element. In a worker
+   * (OffscreenCanvas) that path bails out. Install a remote so the
+   * resolved CSS cursor is posted to main, which owns the visible
+   * <canvas> and applies it there. Sent on XDefineCursor / CWCursor
+   * changes and on every mouse move. */
+  emX11._host.devices.setCursorRemote((css: string) => {
+    post({ type: 'cursorChange', css });
+  });
+
   /* Install the Tcl notifier wake target. libemx11's notifier.c
    * (real_SetTimer / real_AlertNotifier) forwards Tcl's standardised
    * setTimerProc + alertNotifierProc here. The pump is then purely

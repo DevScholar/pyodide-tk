@@ -130,6 +130,9 @@ export function runDemo(opts: RunDemoOptions): DemoHandle {
         });
         break;
       }
+      case 'cursorChange':
+        canvas.style.cursor = msg.css;
+        break;
     }
   }, { signal });
 
