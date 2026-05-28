@@ -273,6 +273,104 @@ canvas.create_text(380, 40, text="Canvas\nText", fill="#e67e22",
 canvas.pack(padx=14, pady=4)
 
 # ====================================================================
+# Tab 6 — Common Dialogs
+# ====================================================================
+f = ttk.Frame(nb)
+nb.add(f, text="Common Dialogs")
+
+from tkinter import messagebox, filedialog, colorchooser
+
+# --- Message Box ---
+tk.Label(f, text="Message Box", font=("Helvetica", 10, "bold")).pack(padx=14, pady=(10, 2), anchor="w")
+
+mbrow1 = tk.Frame(f)
+msgresult = tk.StringVar(value="")
+
+tk.Button(mbrow1, text="Info", command=lambda: (
+    msgresult.set(messagebox.showinfo("Information", "This is an info message box.\nPress OK to continue.")),
+    print(f"MessageBox returned: {msgresult.get()}")
+)).pack(side="left", padx=3)
+
+tk.Button(mbrow1, text="Error", command=lambda: (
+    msgresult.set(messagebox.showerror("Error", "Something went wrong!\nPlease try again.")),
+    print(f"MessageBox returned: {msgresult.get()}")
+)).pack(side="left", padx=3)
+
+tk.Button(mbrow1, text="Question", command=lambda: (
+    msgresult.set(str(messagebox.askyesno("Confirm", "Do you want to save changes before closing?"))),
+    print(f"MessageBox returned: {msgresult.get()}")
+)).pack(side="left", padx=3)
+
+tk.Button(mbrow1, text="Warning", command=lambda: (
+    msgresult.set(str(messagebox.askokcancel("Warning", "This action cannot be undone.\nContinue?"))),
+    print(f"MessageBox returned: {msgresult.get()}")
+)).pack(side="left", padx=3)
+
+mbrow1.pack(padx=14, anchor="w", pady=2)
+
+tk.Label(f, textvariable=msgresult, relief="sunken", width=42, anchor="w", padx=6).pack(padx=14, anchor="w", pady=(0, 4))
+
+# --- File Dialogs ---
+tk.Label(f, text="File Dialogs", font=("Helvetica", 10, "bold")).pack(padx=14, pady=(10, 2), anchor="w")
+
+fdrow = tk.Frame(f)
+filepath = tk.StringVar(value="")
+
+tk.Button(fdrow, text="Open File...", command=lambda: (
+    filepath.set(filedialog.askopenfilename(
+        filetypes=[("Text files", "*.txt *.md"), ("Tcl Scripts", "*.tcl"), ("All files", "*")],
+        title="Open File")),
+    print(f"Selected file: {filepath.get()}") if filepath.get() else None
+)).pack(side="left", padx=3)
+
+tk.Button(fdrow, text="Save File...", command=lambda: (
+    filepath.set(filedialog.asksaveasfilename(
+        filetypes=[("Text files", "*.txt *.md"), ("Tcl Scripts", "*.tcl"), ("All files", "*")],
+        title="Save File", initialfile="untitled.txt", defaultextension=".txt")),
+    print(f"Save path: {filepath.get()}") if filepath.get() else None
+)).pack(side="left", padx=3)
+
+fdrow.pack(padx=14, anchor="w")
+
+tk.Label(f, textvariable=filepath, relief="sunken", width=42, anchor="w", padx=6).pack(padx=14, anchor="w", pady=(2, 4))
+
+# --- Color Chooser ---
+tk.Label(f, text="Color Chooser", font=("Helvetica", 10, "bold")).pack(padx=14, pady=(10, 2), anchor="w")
+
+ccrow = tk.Frame(f)
+selcolor = tk.StringVar(value="#4a90d9")
+
+swatch = tk.Canvas(ccrow, width=28, height=22, bg=selcolor.get(), relief="solid", bd=1)
+swatch.pack(side="left", padx=3)
+
+def choose_color():
+    result = colorchooser.askcolor(parent=root, color=selcolor.get(), title="Choose a color")
+    if result[1] is not None:
+        selcolor.set(result[1])
+        swatch.configure(bg=result[1])
+        print(f"Selected color: {result[1]}")
+
+tk.Button(ccrow, text="Choose Color...", command=choose_color).pack(side="left", padx=3)
+ccrow.pack(padx=14, anchor="w")
+
+tk.Label(f, textvariable=selcolor, relief="sunken", width=42, anchor="w", padx=6).pack(padx=14, anchor="w", pady=(2, 4))
+
+# --- Directory Chooser ---
+tk.Label(f, text="Directory Chooser", font=("Helvetica", 10, "bold")).pack(padx=14, pady=(10, 2), anchor="w")
+
+dcrow = tk.Frame(f)
+dirpath = tk.StringVar(value="")
+
+tk.Button(dcrow, text="Choose Directory...", command=lambda: (
+    dirpath.set(filedialog.askdirectory(title="Select a directory", mustexist=True)),
+    print(f"Selected directory: {dirpath.get()}") if dirpath.get() else None
+)).pack(side="left", padx=3)
+
+dcrow.pack(padx=14, anchor="w")
+
+tk.Label(f, textvariable=dirpath, relief="sunken", width=42, anchor="w", padx=6).pack(padx=14, anchor="w", pady=(2, 4))
+
+# ====================================================================
 # Status bar
 # ====================================================================
 status = tk.Frame(root, relief="sunken", bd=1, height=24)
