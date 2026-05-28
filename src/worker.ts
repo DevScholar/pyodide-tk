@@ -180,6 +180,75 @@ async function boot(
   height: number,
   demoCode: string,
 ): Promise<void> {
+  /* --- Stage: parallel asset prefetch + pyodide.mjs import ---
+   *
+   * Kick off ALL pyodide-tk asset downloads AND the pyodide.mjs import
+   * in one parallel group, before we await any of them. The HTTP layer
+   * fetches everything concurrently with Pyodide's own pyodide.asm.wasm
+   * (~9 MB) + python_stdlib.zip downloads (those start once we await
+   * loadPyodide below). Including the dynamic import in this group --
+   * rather than awaiting it after the fetches start -- lets the browser
+   * begin downloading pyodide.mjs alongside the assets instead of after
+   * the asset fetch() calls have all been issued. `<link rel="preload">`
+   * in index.html warms the connection earlier still; this turns the
+   * cache hit into actual parallel transfer.
+   */
+  const fetchAB = (url: string): Promise<ArrayBuffer> =>
+    fetch(url).then((r) => {
+      if (!r.ok) throw new Error(`fetch ${url}: ${r.status}`);
+      return r.arrayBuffer();
+    });
+  const fetchOptional = (url: string): Promise<ArrayBuffer | null> =>
+    fetch(url).then((r) => {
+      if (r.status === 404) return null;
+      if (!r.ok) throw new Error(`fetch ${url}: ${r.status}`);
+      return r.arrayBuffer();
+    });
+  const A = '/pyodide-tk-assets';
+  const pyodideUrl = new URL('/pyodide/pyodide.mjs', ctx.location.origin).href;
+  const indexURL = new URL('/pyodide/', ctx.location.origin).href;
+  const pending = {
+    pyodide:   import(/* @vite-ignore */ pyodideUrl),
+    libtcl:    fetchAB(`${A}/lib/libtcl8.6.so`),
+    libtk:     fetchAB(`${A}/lib/libtk8.6.so`),
+    libemx11:  fetchAB(`${A}/lib/libemx11.so`),
+    libtcldide:   fetchOptional(`${A}/lib/libtcldide.so`),
+    tkinterSo: fetchAB(`${A}/lib/_tkinter.so`),
+    turtle:    fetchAB(`${A}/turtle.py`),
+    tclLib:    fetchAB(`${A}/tcl-library.tar`),
+    tkLib:     fetchAB(`${A}/tk-library.tar`),
+    tkinterTar:fetchAB(`${A}/tkinter.tar`),
+  };
+
+  /* --- Stage: load Pyodide ---
+   *
+   * In a worker we still resolve URLs against the page origin (same as
+   * main-thread path). importScripts is gone in type=module workers;
+   * use dynamic import.
+   */
+  const { loadPyodide } = await pending.pyodide;
+
+  const py = await loadPyodide({
+    indexURL,
+    env: {
+      TCL_LIBRARY: '/usr/lib/tcl8.6',
+      TK_LIBRARY: '/usr/lib/tk8.6',
+      DISPLAY: ':0',
+      HOME: '/home/pyodide',
+    },
+    /* Surface Python stderr (and traceback output) to main so it lands in
+     * the harness log instead of the worker's hidden console. We don't
+     * redirect stdout -- demo print() noise stays in DevTools. */
+    stderr: (line: string) => logToMain(line),
+  });
+
+  /* Register the canvas through Pyodide's official canvas API so
+   * SDL-based packages and user code that check pyodide.canvas or
+   * Module.canvas find it. em-x11 resolves it back via the
+   * `resolveCanvas` callback below -- `pyodide.canvas` is the single
+   * source of truth. */
+  py.canvas.setCanvas2D(surface as unknown as HTMLCanvasElement);
+
   /* --- Stage: em-x11 host (must precede libemx11.so dlopen) ---
    *
    * The EM_JS bridges in libemx11 read globalThis.emX11 synchronously
@@ -192,7 +261,7 @@ async function boot(
    * flip Chinese/English, no candidate window appears.
    */
   emX11 = await createEmX11({
-    canvas: surface,
+    resolveCanvas: () => py.canvas.getCanvas2D(),
     width,
     height,
     textInputRemote: {
@@ -321,67 +390,6 @@ async function boot(
     if (!v) requestPump();
   };
 
-  /* --- Stage: parallel asset prefetch + pyodide.mjs import ---
-   *
-   * Kick off ALL pyodide-tk asset downloads AND the pyodide.mjs import
-   * in one parallel group, before we await any of them. The HTTP layer
-   * fetches everything concurrently with Pyodide's own pyodide.asm.wasm
-   * (~9 MB) + python_stdlib.zip downloads (those start once we await
-   * loadPyodide below). Including the dynamic import in this group --
-   * rather than awaiting it after the fetches start -- lets the browser
-   * begin downloading pyodide.mjs alongside the assets instead of after
-   * the asset fetch() calls have all been issued. `<link rel="preload">`
-   * in index.html warms the connection earlier still; this turns the
-   * cache hit into actual parallel transfer.
-   */
-  const fetchAB = (url: string): Promise<ArrayBuffer> =>
-    fetch(url).then((r) => {
-      if (!r.ok) throw new Error(`fetch ${url}: ${r.status}`);
-      return r.arrayBuffer();
-    });
-  const fetchOptional = (url: string): Promise<ArrayBuffer | null> =>
-    fetch(url).then((r) => {
-      if (r.status === 404) return null;
-      if (!r.ok) throw new Error(`fetch ${url}: ${r.status}`);
-      return r.arrayBuffer();
-    });
-  const A = '/pyodide-tk-assets';
-  const pyodideUrl = new URL('/pyodide/pyodide.mjs', ctx.location.origin).href;
-  const indexURL = new URL('/pyodide/', ctx.location.origin).href;
-  const pending = {
-    pyodide:   import(/* @vite-ignore */ pyodideUrl),
-    libtcl:    fetchAB(`${A}/lib/libtcl8.6.so`),
-    libtk:     fetchAB(`${A}/lib/libtk8.6.so`),
-    libemx11:  fetchAB(`${A}/lib/libemx11.so`),
-    libtcldide:   fetchOptional(`${A}/lib/libtcldide.so`),
-    tkinterSo: fetchAB(`${A}/lib/_tkinter.so`),
-    turtle:    fetchAB(`${A}/turtle.py`),
-    tclLib:    fetchAB(`${A}/tcl-library.tar`),
-    tkLib:     fetchAB(`${A}/tk-library.tar`),
-    tkinterTar:fetchAB(`${A}/tkinter.tar`),
-  };
-
-  /* --- Stage: load Pyodide ---
-   *
-   * In a worker we still resolve URLs against the page origin (same as
-   * main-thread path). importScripts is gone in type=module workers;
-   * use dynamic import.
-   */
-  const { loadPyodide } = await pending.pyodide;
-
-  const py = await loadPyodide({
-    indexURL,
-    env: {
-      TCL_LIBRARY: '/usr/lib/tcl8.6',
-      TK_LIBRARY: '/usr/lib/tk8.6',
-      DISPLAY: ':0',
-      HOME: '/home/pyodide',
-    },
-    /* Surface Python stderr (and traceback output) to main so it lands in
-     * the harness log instead of the worker's hidden console. We don't
-     * redirect stdout -- demo print() noise stays in DevTools. */
-    stderr: (line: string) => logToMain(line),
-  });
   const pyi = pyodideInternals(py);
 
   /* --- Stage: stage prefetched bytes into MEMFS ---

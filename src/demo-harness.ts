@@ -26,8 +26,11 @@ export interface RunDemoOptions {
    *  `turtle.done()`. The worker's drain helper looks at
    *  `tkinter._default_root`, so the demo doesn't need to expose anything. */
   pythonCode: string;
-  /** id of the <canvas> element the worker should paint into. */
-  canvasId?: string;
+  /** <canvas> element the worker should paint into (transferred as
+   *  OffscreenCanvas). Caller owns the element; register it via
+   *  `pyodide.canvas.setCanvas2D()` in the worker realm to follow
+   *  Pyodide's official canvas API. */
+  canvas: HTMLCanvasElement;
   /** id of the <div> that receives status / error log lines. */
   logId?: string;
 }
@@ -43,13 +46,11 @@ export interface DemoHandle {
 }
 
 export function runDemo(opts: RunDemoOptions): DemoHandle {
-  const canvasId = opts.canvasId ?? 'emx11-canvas';
   const logId = opts.logId ?? 'log';
 
   const log = document.getElementById(logId);
-  const canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
+  const canvas = opts.canvas;
   if (!log) throw new Error(`runDemo: missing #${logId}`);
-  if (!canvas) throw new Error(`runDemo: missing #${canvasId}`);
   if (!canvas.transferControlToOffscreen) {
     throw new Error('OffscreenCanvas unsupported -- pyodide-tk requires a modern browser');
   }
@@ -168,7 +169,7 @@ export function runDemo(opts: RunDemoOptions): DemoHandle {
   function cssPoint(e: MouseEvent): { x: number; y: number } {
     const rect = canvas!.getBoundingClientRect();
     /* Scale CSS coords back into the canvas's internal coordinate
-     * space. The shared style.css renders #emx11-canvas at a fixed
+     * space. The shared style.css renders the demo canvas at a fixed
      * 1024x768 CSS box regardless of the canvas's `width`/`height`
      * attributes, so a demo with a 640x360 backing buffer gets its
      * clicks landing at the wrong widget without this transform.

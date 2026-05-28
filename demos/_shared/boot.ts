@@ -15,4 +15,7 @@ if (!demoEl) throw new Error('boot: missing <script id="demo">');
 const code = demoEl.textContent;
 if (!code) throw new Error('boot: <script id="demo"> is empty');
 
-runDemo({ pythonCode: code });
+const canvas = document.getElementById('emx11-canvas') as HTMLCanvasElement | null;
+if (!canvas) throw new Error('boot: missing #emx11-canvas');
+
+runDemo({ pythonCode: code, canvas });
