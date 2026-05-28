@@ -15,7 +15,7 @@ if (!demoEl) throw new Error('boot: missing <script id="demo">');
 let code: string;
 const src = demoEl.getAttribute('data-src');
 if (src) {
-  const resp = await fetch(new URL(src, import.meta.url).href);
+  const resp = await fetch(new URL(src, window.location.href).href);
   if (!resp.ok) throw new Error(`boot: fetch ${src} failed (${resp.status})`);
   code = await resp.text();
 } else {
