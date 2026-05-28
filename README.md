@@ -13,19 +13,18 @@ Built on top of [Pyodide](https://pyodide.org/); Tk's X11 calls are handled by t
 - Linux
 - Emscripten 5.0.3 (pinned by Pyodide 314; `emcc` must be on `PATH`)
 - Node.js ≥ 20, pnpm ≥ 9
-- Python ≥ 3.11 with `pyodide-build`
-- [em-x11](https://github.com/DevScholar/em-x11) cloned as a sibling directory
-- [tcldide](https://github.com/DevScholar/tcldide) cloned as a sibling directory (**optional** — only needed for the `::tcldide::*` Tcl→DOM commands; without it tkinter still works fine and the Makefile prints a clear message)
+- Python ≥ 3.11 with `pyodide-build` and xbuildenv (`pip install pyodide-build && pyodide xbuildenv install 0.34.3`)
+- [em-x11](https://github.com/DevScholar/em-x11) cloned as a sibling directory and built (`pnpm install && pnpm build:native`)
+- [tcldide](https://github.com/DevScholar/tcldide) cloned as a sibling directory (**optional** — only needed for the `::tcldide::*` Tcl→DOM commands)
+
+# Quick start
 
 ```bash
-pip install pyodide-build
-pyodide xbuildenv install 0.34.3
-cd ../em-x11 && pnpm install && pnpm build:native && cd ../pyodide-tk
-# Optional: clone tcldide as a sibling for ::tcldide::dom / ::tcldide::jscall
-# (no separate build step needed — pyodide-tk's Makefile picks up
-#  ../tcldide/opt/tcldide.c directly)
-pnpm install
+pnpm install   # downloads sources, builds .so side modules, stages assets
+pnpm dev       # starts Vite dev server
 ```
+
+`pnpm install` detects missing external dependencies (em-x11, xbuildenv) and prints install instructions if any are absent. Install them and re-run `pnpm install`.
 
 # Build
 

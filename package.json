@@ -11,6 +11,7 @@
     "pnpm": ">=9"
   },
   "scripts": {
+    "postinstall": "bash scripts/setup.sh",
     "build": "pnpm run build:native && pnpm run stage-assets && pnpm run build:web",
     "build:native": "make -j all",
     "build:web": "vite build",

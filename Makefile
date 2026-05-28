@@ -201,56 +201,29 @@ smoke-tcl: libtcl-so
 	cd $(SMOKE_DIR) && node smoke_tcl.js
 
 # ---- em-x11 (libemx11.so) ----------------------------------------------
-# em-x11 now ships as split archives (libX11.a / libXext.a / libXrender.a /
-# libfontconfig.a / libXft.a) plus the emscripten-ports script at
-# tools/ports/emx11.py that provides include paths and archive discovery.
-# For our side-module path we still need everything in one .so (Pyodide
-# dlopens exactly one file), so we --whole-archive all five into a single
-# libemx11.so. The GLX archive is excluded -- _tkinter doesn't use OpenGL
-# and pulling glx.c in would also drag the legacy GL emulation entry points
-# into the dlopen graph.
+# em-x11 ships as split archives (libX11.a / libXext.a / libXrender.a /
+# libfontconfig.a / libXft.a). The user must build it separately:
+#   cd ../em-x11 && pnpm install && pnpm build:native
 #
-# We build em-x11's native/ via cmake (the port's _ensure_built builds the
-# full tree including third-party which we don't need). Archives land in
-# $(EMX11_BUILD)/; we copy them to $(LIBDIR)/ for the side-module relink.
+# For our side-module path we need everything in one .so (Pyodide dlopens
+# exactly one file), so we --whole-archive all five into a single libemx11.so.
+# GLX is excluded -- _tkinter doesn't use OpenGL.
 
-EMX11_BUILD = $(BUILD)/em-x11
 EMX11_ARCHIVES = \
-	$(EMX11_BUILD)/libX11.a \
-	$(EMX11_BUILD)/libXext.a \
-	$(EMX11_BUILD)/libXrender.a \
-	$(EMX11_BUILD)/libfontconfig.a \
-	$(EMX11_BUILD)/libXft.a
+	$(EMX11_DIR)/build/artifacts/libX11.a \
+	$(EMX11_DIR)/build/artifacts/libXext.a \
+	$(EMX11_DIR)/build/artifacts/libXrender.a \
+	$(EMX11_DIR)/build/artifacts/libfontconfig.a \
+	$(EMX11_DIR)/build/artifacts/libXft.a
 
-# Collect the em-x11 native source tree so the rebuild rule fires when any
-# .c or .h changes. Also depend on CMakeLists.txt so cmake reconfigures when
-# the build graph itself changes (new files, renamed sources, etc.).
-#
-# !!! IMPORTANT: the recipe uses `cmake --build`, NOT raw `emmake make`.
-# Without `cmake --build`, the inner cmake-generated Makefile is invoked
-# directly and cmake's reconfiguration step never fires -- stale dependency
-# info causes "changed source, but nothing recompiled" bugs. tcldide's
-# runtime/CMakeLists.txt uses the same `cmake --build` pattern for this
-# reason (see project_pyodide_tk_stage_assets memory).
-EMX11_NATIVE_SRC = $(shell find $(EMX11_DIR)/native -name '*.c' -o -name '*.h' 2>/dev/null)
-EMX11_CMAKE_SRC = $(wildcard $(EMX11_DIR)/native/CMakeLists.txt $(EMX11_DIR)/native/**/CMakeLists.txt)
-
-$(EMX11_BUILD)/CMakeCache.txt:
-	mkdir -p $(EMX11_BUILD)
-	cd $(EMX11_BUILD) && emcmake cmake $(EMX11_DIR)/native \
-		-DCMAKE_BUILD_TYPE=MinSizeRel \
-		-DEMX11_HIDE_INTERNAL_SYMBOLS=OFF \
-		-DCMAKE_C_FLAGS="$(WASMEH) -fPIC"
-
-# CMake emits the archives under $(EMX11_BUILD); we touch a sentinel so
-# the side-module rule has a single OOD trigger to depend on.
-$(EMX11_BUILD)/.archives.stamp: $(EMX11_BUILD)/CMakeCache.txt $(EMX11_NATIVE_SRC) $(EMX11_CMAKE_SRC)
-	cd $(EMX11_BUILD) && cmake --build .
-	touch $@
-
-$(EMX11_ARCHIVES): $(EMX11_BUILD)/.archives.stamp
-
-$(LIBDIR)/libemx11.so: $(EMX11_BUILD)/.archives.stamp $(LIBDIR)/libtcl8.6.so
+$(LIBDIR)/libemx11.so: $(LIBDIR)/libtcl8.6.so
+	@for a in $(EMX11_ARCHIVES); do \
+		test -f "$$a" || { \
+			echo "ERROR: em-x11 archive not found: $$a"; \
+			echo "Run: cd ../em-x11 && pnpm install && pnpm build:native"; \
+			exit 1; \
+		}; \
+	done
 	mkdir -p $(LIBDIR)
 	cp $(EMX11_ARCHIVES) $(LIBDIR)/
 	# Link libtcl8.6.so so it lands on libemx11's NEEDED entry. Pyodide's
