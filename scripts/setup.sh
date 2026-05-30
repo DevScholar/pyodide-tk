@@ -11,6 +11,11 @@
 #   - xbuildenv    pyodide xbuildenv install 0.34.3
 set -euo pipefail
 
+if [ "$(uname -s)" != "Linux" ]; then
+  echo "ERROR: This project requires Linux. Run from WSL, not Git Bash or Windows."
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$SCRIPT_DIR"
 

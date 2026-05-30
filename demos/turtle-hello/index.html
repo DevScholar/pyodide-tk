@@ -21,7 +21,9 @@
     <link rel="preload" as="fetch" crossorigin
           href="/pyodide-tk-assets/lib/libtk8.6.so" />
     <link rel="preload" as="fetch" crossorigin
-          href="/pyodide-tk-assets/lib/libemx11.so" />
+          href="/pyodide-tk-assets/lib/libX11.so" />
+    <link rel="preload" as="fetch" crossorigin
+          href="/pyodide-tk-assets/lib/libXft.so" />
     <link rel="preload" as="fetch" crossorigin
           href="/pyodide-tk-assets/lib/_tkinter.so" />
     <link rel="stylesheet" href="/demos/_shared/style.css" />
@@ -29,7 +31,7 @@
   <body>
     <h1>pyodide-tk · turtle-hello</h1>
     <p>Stdlib <code>turtle</code> drawing on a Tk Canvas, in the browser.</p>
-    <canvas id="emx11-canvas" width="1024" height="768"></canvas>
+    <canvas id="canvas" width="1024" height="768"></canvas>
     <div id="log">booting…</div>
 
     <!-- Standard Python turtle, unchanged. -->

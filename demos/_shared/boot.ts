@@ -23,7 +23,7 @@ if (src) {
 }
 if (!code) throw new Error('boot: no Python source');
 
-const canvas = document.getElementById('emx11-canvas') as HTMLCanvasElement | null;
-if (!canvas) throw new Error('boot: missing #emx11-canvas');
+const canvas = document.getElementById('canvas') as HTMLCanvasElement | null;
+if (!canvas) throw new Error('boot: missing #canvas');
 
 runDemo({ pythonCode: code, canvas });

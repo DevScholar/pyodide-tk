@@ -17,7 +17,8 @@ CPYLIB=build/cpython-src/cpython-3.14.2/Lib
 # was missing. List everything we need and report all gaps at once.
 missing=()
 for f in \
-    "$LIB/libtcl8.6.so" "$LIB/libtk8.6.so" "$LIB/libemx11.so" \
+    "$LIB/libtcl8.6.so" "$LIB/libtk8.6.so" \
+    "$LIB/libX11.so" "$LIB/libXext.so" "$LIB/libXrender.so" "$LIB/libfontconfig.so" "$LIB/libXft.so" \
     "$TKD/_tkinter.so" \
     "$CPYLIB/turtle.py" \
     "build/tcl/library" "build/tk/library" "$CPYLIB/tkinter"
@@ -55,7 +56,9 @@ fi
 # Side modules. libtcldide is optional -- sibling tcldide might not be
 # built. Distinguish "file absent" (skip with a friendly note) from
 # "cp failed for any other reason" (real error, propagate via set -e).
-cp -u "$LIB"/libtcl8.6.so "$LIB"/libtk8.6.so "$LIB"/libemx11.so "$PUB/lib/"
+cp -u "$LIB"/libtcl8.6.so "$LIB"/libtk8.6.so \
+    "$LIB"/libX11.so "$LIB"/libXext.so "$LIB"/libXrender.so "$LIB"/libfontconfig.so "$LIB"/libXft.so \
+    "$PUB/lib/"
 if [[ -f "$LIB/libtcldide.so" ]]; then
     cp -u "$LIB/libtcldide.so" "$PUB/lib/"
 else

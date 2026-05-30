@@ -211,8 +211,11 @@ async function boot(
     pyodide:   import(/* @vite-ignore */ pyodideUrl),
     libtcl:    fetchAB(`${A}/lib/libtcl8.6.so`),
     libtk:     fetchAB(`${A}/lib/libtk8.6.so`),
-    libemx11:  fetchAB(`${A}/lib/libemx11.so`),
-    libtcldide:   fetchOptional(`${A}/lib/libtcldide.so`),
+    libX11:    fetchAB(`${A}/lib/libX11.so`),
+    libXft:    fetchAB(`${A}/lib/libXft.so`),
+    libXrender:fetchAB(`${A}/lib/libXrender.so`),
+    libfontconfig: fetchAB(`${A}/lib/libfontconfig.so`),
+    libtcldide:    fetchOptional(`${A}/lib/libtcldide.so`),
     tkinterSo: fetchAB(`${A}/lib/_tkinter.so`),
     turtle:    fetchAB(`${A}/turtle.py`),
     tclLib:    fetchAB(`${A}/tcl-library.tar`),
@@ -244,15 +247,15 @@ async function boot(
 
   /* Register the canvas through Pyodide's official canvas API so
    * SDL-based packages and user code that check pyodide.canvas or
-   * Module.canvas find it. em-x11 resolves it back via the
-   * `resolveCanvas` callback below -- `pyodide.canvas` is the single
-   * source of truth. */
+   * Module.canvas find it. We pass the same surface directly to
+   * createEmX11 so em-x11 paints into Pyodide's single source of truth. */
+  (surface as unknown as Record<string,unknown>).id = 'canvas';
   py.canvas.setCanvas2D(surface as unknown as HTMLCanvasElement);
 
-  /* --- Stage: em-x11 host (must precede libemx11.so dlopen) ---
+  /* --- Stage: em-x11 host (must precede libX11.so dlopen) ---
    *
-   * The EM_JS bridges in libemx11 read globalThis.emX11 synchronously
-   * from each X call, and createEmX11 mirrors itself onto that slot.
+   * The EM_JS bridges in libX11 read Module['emx11Host'] synchronously
+   * from each X call; createEmX11/connection.open sets this slot.
    *
    * textInputRemote: forward XSetICFocus / Tk_SetCaretPos commands
    * to main, which owns the hidden <textarea> the OS IME anchors to.
@@ -261,7 +264,7 @@ async function boot(
    * flip Chinese/English, no candidate window appears.
    */
   emX11 = await createEmX11({
-    resolveCanvas: () => py.canvas.getCanvas2D(),
+    canvas: surface,
     width,
     height,
     textInputRemote: {
@@ -275,21 +278,16 @@ async function boot(
   });
 
   /* Tk wrote to CLIPBOARD: libemx11's emx11_js_clipboard_write_utf8
-   * looks for `clipboardWriteRemote` on the bridge facade and routes
-   * through it when set. Worker realm has no reliable
-   * navigator.clipboard.writeText (no user activation across the
-   * thread boundary), so we post the bytes back to main where the
-   * DOM holds the permission. */
-  const bridgeFacade = (globalThis as { emX11?: { _bridge?: { clipboardWriteRemote?: (b: Uint8Array) => void } } }).emX11;
-  if (bridgeFacade?._bridge) {
-    bridgeFacade._bridge.clipboardWriteRemote = (bytes: Uint8Array) => {
-      /* Copy the bytes before posting; libemx11 reuses its source
-       * buffer (HEAPU8 view) and the postMessage frame must own a
-       * stable snapshot. */
+   * reads Module['emx11Host'].clipboardWriteRemote. Worker realm has
+   * no reliable navigator.clipboard.writeText (no user activation
+   * across the thread boundary), so we post the bytes back to main
+   * where the DOM holds the permission. Install the hook on the
+   * Host object that the bridge already reads. */
+  (emX11._host as unknown as Record<string, unknown>).clipboardWriteRemote =
+    (bytes: Uint8Array): void => {
       const snapshot = new Uint8Array(bytes);
       post({ type: 'clipboardWrite', bytes: snapshot });
     };
-  }
 
   /* Cursor bridge: em-x11's InputBridge.applyCursorFor() normally
    * writes el.style.cursor on the canvas DOM element. In a worker
@@ -404,20 +402,24 @@ async function boot(
   py.FS.mkdirTree('/usr/lib');
   py.FS.mkdirTree('/lib/python3.14/site-packages');
   const [
-    libtclBuf, libtkBuf, libemx11Buf, libtcldideBuf, tkinterSoBuf,
+    libtclBuf, libtkBuf, libX11Buf, libXftBuf, libXrenderBuf, libfontconfigBuf, libtcldideBuf, tkinterSoBuf,
     turtleBuf, tclLibBuf, tkLibBuf, tkinterTarBuf,
   ] = await Promise.all([
-    pending.libtcl, pending.libtk, pending.libemx11, pending.libtcldide, pending.tkinterSo,
+    pending.libtcl, pending.libtk, pending.libX11, pending.libXft, pending.libXrender, pending.libfontconfig,
+    pending.libtcldide, pending.tkinterSo,
     pending.turtle, pending.tclLib, pending.tkLib, pending.tkinterTar,
   ]);
   const writeFromBuf = (buf: ArrayBuffer, memPath: string): void => {
     py.FS.writeFile(memPath, new Uint8Array(buf));
   };
-  writeFromBuf(libtclBuf,    '/usr/lib/libtcl8.6.so');
-  writeFromBuf(libtkBuf,     '/usr/lib/libtk8.6.so');
-  writeFromBuf(libemx11Buf,  '/usr/lib/libemx11.so');
+  writeFromBuf(libtclBuf,       '/usr/lib/libtcl8.6.so');
+  writeFromBuf(libtkBuf,        '/usr/lib/libtk8.6.so');
+  writeFromBuf(libX11Buf,       '/usr/lib/libX11.so');
+  writeFromBuf(libXftBuf,       '/usr/lib/libXft.so');
+  writeFromBuf(libXrenderBuf,   '/usr/lib/libXrender.so');
+  writeFromBuf(libfontconfigBuf,'/usr/lib/libfontconfig.so');
   if (libtcldideBuf) writeFromBuf(libtcldideBuf, '/usr/lib/libtcldide.so');
-  writeFromBuf(tkinterSoBuf, '/lib/python3.14/site-packages/_tkinter.so');
+  writeFromBuf(tkinterSoBuf,    '/lib/python3.14/site-packages/_tkinter.so');
   /* turtle is a single-file stdlib module that imports tkinter; Pyodide
    * strips it from python_stdlib.zip alongside tkinter, so we stage the
    * CPython source copy next to _tkinter.so. Cheap (~150 KB) and lets
@@ -431,38 +433,40 @@ async function boot(
   py.unpackArchive(tkLibBuf,      'tar', { extractDir: '/usr/lib/tk8.6' });
   py.unpackArchive(tkinterTarBuf, 'tar', { extractDir: '/lib/python3.14/site-packages/tkinter' });
 
-  /* --- Stage: load libemx11 + bind it as default module ---
+  /* --- Stage: load em-x11 split side modules ---
    *
-   * libemx11 is the bridge entry point -- nothing else NEEDs it, so
-   * load manually. Loading it pulls libtcl via libemx11's NEEDED entry
-   * (see Makefile $(LIBDIR)/libemx11.so step). _tkinter then pulls
-   * libtk via NEEDED, and libtk's Xlib refs resolve against the
-   * already-loaded libemx11.
+   * Load order mirrors real X's NEEDED graph but we drive it explicitly
+   * so Tcl_SetNotifier (in libX11, undefined at build time) resolves
+   * against the already-loaded libtcl8.6.so via RTLD_GLOBAL.
+   *
+   *   1. libtcl8.6.so     — Tcl symbols available to all subsequent loads
+   *   2. libX11.so        — Tcl_SetNotifier resolves from (1)
+   *   3. libXft.so        — NEEDED cascade: libXrender → libX11,
+   *                          libfontconfig → libX11 (both already loaded)
+   *
+   * _tkinter (loaded last) pulls libtk8.6.so via NEEDED; libtk's X11
+   * symbols resolve from the already-loaded X11 split modules.
    */
-  await pyi.loadDynlib('/usr/lib/libemx11.so', { global: true });
+  await pyi.loadDynlib('/usr/lib/libtcl8.6.so', { global: true });
+  await pyi.loadDynlib('/usr/lib/libX11.so', { global: true });
+  await pyi.loadDynlib('/usr/lib/libXft.so', { global: true });
 
   /* Browser-friendly Tcl notifier must be installed BEFORE Tk_Init. */
-  const libemx11Exports = pyi.loadedLibExports('/usr/lib/libemx11.so');
-  if (!libemx11Exports?.emx11_install_browser_notifier) {
-    throw new Error('emx11_install_browser_notifier not found in libemx11 exports');
+  const libX11Exports = pyi.loadedLibExports('/usr/lib/libX11.so');
+  if (!libX11Exports?.emx11_install_browser_notifier) {
+    throw new Error('emx11_install_browser_notifier not found in libX11 exports');
   }
-  (libemx11Exports.emx11_install_browser_notifier as () => void)();
+  (libX11Exports.emx11_install_browser_notifier as () => void)();
 
-  /* Pre-bind libemx11's exports as the default module for ANY future
+  /* Pre-bind libX11's exports as the default module for ANY future
    * XOpenDisplay. Doing this BEFORE _tkinter loads means tkinter.Tk()'s
    * very first XOpenDisplay picks up the surface automatically -- we
    * don't need a manual `_tkinter.create` bootstrap call (which would
    * create a second redundant Tk root that ends up obscuring the real
    * widgets).
-   *
-   * em-x11's public API doesn't yet expose this binding directly (it's
-   * specific to the Pyodide-loads-libemx11-itself flow), so reach
-   * through emX11._host. TODO: lift this into a public method such as
-   * emX11.dlopen('/usr/lib/libemx11.so') auto-binding the resulting
-   * export table.
    */
   const moduleSurface = makeSideModuleSurface(
-    libemx11Exports as unknown as Record<string, (...args: unknown[]) => unknown>,
+    libX11Exports as unknown as Record<string, (...args: unknown[]) => unknown>,
     pyi.memorySurface(),
   );
   emX11._host.connection.setDefaultModule(moduleSurface);

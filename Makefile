@@ -51,11 +51,11 @@ SIDE_LDFLAGS = -sSIDE_MODULE=1 $(WASMEH)
 
 .PHONY: all tclprep tkprep tkinter clean distclean toolcheck smoke-tcl libtcl-so stage cpython-src
 
-all: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(LIBDIR)/libemx11.so $(LIBDIR)/libtcldide.so $(TKINTER_OUT)/_tkinter.so stage
+all: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(EMX11_SIDE_MODULES_COPY) $(LIBDIR)/libtcldide.so $(TKINTER_OUT)/_tkinter.so stage
 
 # Stage built artefacts into public/ so the vite dev server picks them up.
 # Folded into `all` so a fresh clone -> `make` -> `pnpm dev` just works.
-stage: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(LIBDIR)/libemx11.so $(LIBDIR)/libtcldide.so $(TKINTER_OUT)/_tkinter.so
+stage: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(EMX11_SIDE_MODULES_COPY) $(LIBDIR)/libtcldide.so $(TKINTER_OUT)/_tkinter.so
 	bash $(CURDIR)/scripts/stage-assets.sh
 
 # smoke-tcl needs an alias because the recipe doesn't reference the .so by path.
@@ -164,7 +164,7 @@ $(BUILD)/tk/unix/libtk8.6.a: $(BUILD)/tk/unix/Makefile
 	cd $(BUILD)/tk/unix && emmake make -j libtk8.6.a libtkstub8.6.a
 
 # Side-module relink for Tk. Tk references many Xlib symbols from
-# em-x11; we pass them as undefined for now (libemx11 .so step will
+# em-x11; we pass them as undefined for now (the .so link step will
 # resolve them at the next layer). --no-whole-archive on libtcl avoids
 # duplicating its objects (libtcl-so already exports them).
 $(LIBDIR)/libtk8.6.so: $(BUILD)/tk/unix/libtk8.6.a
@@ -200,45 +200,39 @@ smoke-tcl: libtcl-so
 	@echo "---- node $(SMOKE_DIR)/smoke_tcl.js ----"
 	cd $(SMOKE_DIR) && node smoke_tcl.js
 
-# ---- em-x11 (libemx11.so) ----------------------------------------------
-# em-x11 ships as split archives (libX11.a / libXext.a / libXrender.a /
-# libfontconfig.a / libXft.a). The user must build it separately:
-#   cd ../em-x11 && pnpm install && pnpm build:native
+# ---- em-x11 split side modules ------------------------------------------
+# em-x11 builds split side modules mirroring real X's shared-library layout:
+#   libX11.so  libXext.so  libXrender.so  libfontconfig.so  libXft.so
+# Each .so carries proper NEEDED entries (e.g. libXft.so -> libXrender.so).
+# Pyodide's recursive dlopen cascades through the graph at load time.
 #
-# For our side-module path we need everything in one .so (Pyodide dlopens
-# exactly one file), so we --whole-archive all five into a single libemx11.so.
+# Build em-x11 with side modules enabled:
+#   cd ../em-x11 && pnpm install && pnpm build:native
+# (EMX11_BUILD_SIDE_MODULE=ON is required; see em-x11/docs/api.md)
+#
 # GLX is excluded -- _tkinter doesn't use OpenGL.
 
-EMX11_ARCHIVES = \
-	$(EMX11_DIR)/build/artifacts/libX11.a \
-	$(EMX11_DIR)/build/artifacts/libXext.a \
-	$(EMX11_DIR)/build/artifacts/libXrender.a \
-	$(EMX11_DIR)/build/artifacts/libfontconfig.a \
-	$(EMX11_DIR)/build/artifacts/libXft.a
+EMX11_SIDE_MODULES = \
+	$(EMX11_DIR)/build/artifacts/libX11.so \
+	$(EMX11_DIR)/build/artifacts/libXext.so \
+	$(EMX11_DIR)/build/artifacts/libXrender.so \
+	$(EMX11_DIR)/build/artifacts/libfontconfig.so \
+	$(EMX11_DIR)/build/artifacts/libXft.so
 
-$(LIBDIR)/libemx11.so: $(LIBDIR)/libtcl8.6.so
-	@for a in $(EMX11_ARCHIVES); do \
-		test -f "$$a" || { \
-			echo "ERROR: em-x11 archive not found: $$a"; \
+EMX11_SIDE_MODULES_COPY = $(LIBDIR)/.emx11-side-modules.stamp
+
+$(LIBDIR)/.emx11-side-modules.stamp: $(EMX11_SIDE_MODULES)
+	@for so in $(EMX11_SIDE_MODULES); do \
+		test -f "$$so" || { \
+			echo "ERROR: em-x11 side module not found: $$so"; \
 			echo "Run: cd ../em-x11 && pnpm install && pnpm build:native"; \
+			echo "Make sure EMX11_BUILD_SIDE_MODULE=ON is set in em-x11's cmake."; \
 			exit 1; \
 		}; \
 	done
 	mkdir -p $(LIBDIR)
-	cp $(EMX11_ARCHIVES) $(LIBDIR)/
-	# Link libtcl8.6.so so it lands on libemx11's NEEDED entry. Pyodide's
-	# loadDynlib hard-codes flags=2; the only way our notifier's
-	# Tcl_SetNotifier ref resolves at dlopen time is via NEEDED auto-cascade.
-	emcc $(SIDE_LDFLAGS) -o $(LIBDIR)/libemx11.so \
-		-Wl,--whole-archive \
-		$(LIBDIR)/libX11.a \
-		$(LIBDIR)/libXext.a \
-		$(LIBDIR)/libXrender.a \
-		$(LIBDIR)/libfontconfig.a \
-		$(LIBDIR)/libXft.a \
-		-Wl,--no-whole-archive \
-		$(LIBDIR)/libtcl8.6.so \
-		-sERROR_ON_UNDEFINED_SYMBOLS=0
+	cp -u $(EMX11_SIDE_MODULES) $(LIBDIR)/
+	touch $@
 
 # ---- CPython source + _tkinter.so --------------------------------------
 # We need _tkinter.c and tkappinit.c from CPython's Modules/, plus the
@@ -289,15 +283,16 @@ $(PYINC)/Python.h:
 
 tkinter: $(TKINTER_OUT)/_tkinter.so
 
-$(TKINTER_OUT)/_tkinter.so: $(CPYTHON_SRC)/_tkinter.c $(LIBDIR)/libtk8.6.so $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libemx11.so $(PYINC)/Python.h
+$(TKINTER_OUT)/_tkinter.so: $(CPYTHON_SRC)/_tkinter.c $(LIBDIR)/libtk8.6.so $(LIBDIR)/libtcl8.6.so $(EMX11_SIDE_MODULES_COPY) $(PYINC)/Python.h
 	mkdir -p $(TKINTER_OUT)
 	emcc $(WASMEH) $(SIDE_CC) -sSIDE_MODULE=1 \
 		-DWITH_APPINIT=1 -DPy_BUILD_CORE_BUILTIN=1 \
 		-I $(PYINC) -I $(CPYTHON_SRC)/Include/internal -I $(CPYTHON_SRC) \
 		-I $(INCDIR) -I $(INCDIR)/tk \
-		--use-port=$(EMX11_PORT) \
+		-I $(EMX11_INCLUDES) \
 		$(CPYTHON_SRC)/_tkinter.c $(CPYTHON_SRC)/tkappinit.c \
-		$(LIBDIR)/libtk8.6.so $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libemx11.so \
+		$(LIBDIR)/libtk8.6.so $(LIBDIR)/libtcl8.6.so \
+		$(LIBDIR)/libX11.so $(LIBDIR)/libXft.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0 \
 		-o $(TKINTER_OUT)/_tkinter.so
 
