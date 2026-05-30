@@ -16,6 +16,13 @@ EMX11_DIR      ?= $(CURDIR)/../em-x11
 EMX11_INCLUDES  = $(EMX11_DIR)/native/include
 EMX11_PORT      = $(EMX11_DIR)/tools/ports/emx11.py
 
+# em-x11 is auto-built by pyodide-tk (see recipe below). Archives land in
+# $(BUILD)/em-x11/, built from $(EMX11_DIR)/native/ with the flags
+# Pyodide dlopen requires.  EMX11_HIDE_INTERNAL_SYMBOLS=OFF is forced
+# so --whole-archive can see and export every Xlib symbol.
+EMX11_BUILD_DIR = $(BUILD)/em-x11
+EMX11_STAMP     = $(EMX11_BUILD_DIR)/.built
+
 # CPython 3.14.2 source — needed for _tkinter.c. Either reuse the copy
 # pyodide-build's xbuildenv unpacks (`pyodide xbuildenv install 0.34.3`),
 # or fall back to fetching the source tarball from python.org.
@@ -200,38 +207,88 @@ smoke-tcl: libtcl-so
 	@echo "---- node $(SMOKE_DIR)/smoke_tcl.js ----"
 	cd $(SMOKE_DIR) && node smoke_tcl.js
 
-# ---- em-x11 split side modules ------------------------------------------
-# em-x11 builds split side modules mirroring real X's shared-library layout:
-#   libX11.so  libXext.so  libXrender.so  libfontconfig.so  libXft.so
-# Each .so carries proper NEEDED entries (e.g. libXft.so -> libXrender.so).
-# Pyodide's recursive dlopen cascades through the graph at load time.
+# ---- em-x11 build (auto) -------------------------------------------------
+# Builds em-x11 static archives from the sibling repo's native/ source into
+# $(BUILD)/em-x11/.  EMX11_HIDE_INTERNAL_SYMBOLS=OFF is forced so that
+# --whole-archive can see and export every Xlib symbol during the side-module
+# relink step below.
 #
-# Build em-x11 with side modules enabled:
-#   cd ../em-x11 && pnpm install && pnpm build:native
-# (EMX11_BUILD_SIDE_MODULE=ON is required; see em-x11/docs/api.md)
+# This replaces the old workflow of requiring the user to pre-build em-x11
+# separately.  make now drives the cmake configure + build itself, ensuring
+# the correct flags every time.
 #
-# GLX is excluded -- _tkinter doesn't use OpenGL.
+# The cmake build only compiles the native/ archive set (libX11, libXext,
+# libXrender, libfontconfig, libXft).  Third-party libs and demos are
+# skipped — pyodide-tk doesn't need them.
 
-EMX11_SIDE_MODULES = \
-	$(EMX11_DIR)/build/artifacts/libX11.so \
-	$(EMX11_DIR)/build/artifacts/libXext.so \
-	$(EMX11_DIR)/build/artifacts/libXrender.so \
-	$(EMX11_DIR)/build/artifacts/libfontconfig.so \
-	$(EMX11_DIR)/build/artifacts/libXft.so
+$(EMX11_STAMP): $(EMX11_DIR)/native/CMakeLists.txt
+	@echo "==> Configuring em-x11 (native subset) into $(EMX11_BUILD_DIR)"
+	rm -rf $(EMX11_BUILD_DIR)
+	mkdir -p $(EMX11_BUILD_DIR)
+	cd $(EMX11_BUILD_DIR) && emcmake cmake -S $(EMX11_DIR)/native -B . \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DEMX11_HIDE_INTERNAL_SYMBOLS=OFF
+	@echo "==> Building em-x11 archives"
+	$(MAKE) -C $(EMX11_BUILD_DIR) -j
+	touch $@
+
+$(EMX11_BUILD_DIR)/libX11.a: $(EMX11_STAMP)
+$(EMX11_BUILD_DIR)/libXext.a: $(EMX11_STAMP)
+$(EMX11_BUILD_DIR)/libXrender.a: $(EMX11_STAMP)
+$(EMX11_BUILD_DIR)/libfontconfig.a: $(EMX11_STAMP)
+$(EMX11_BUILD_DIR)/libXft.a: $(EMX11_STAMP)
+
+# ---- em-x11 split side modules ------------------------------------------
+# Relink each static archive into a proper SIDE_MODULE.  Dependencies mirror
+# real X's NEEDED graph:
+#   libX11.so       -> libtcl8.6.so
+#   libXext.so      -> libX11.so, libtcl8.6.so
+#   libXrender.so   -> libX11.so, libtcl8.6.so
+#   libfontconfig.so -> libX11.so, libtcl8.6.so
+#   libXft.so       -> libXrender.so, libfontconfig.so, libX11.so, libtcl8.6.so
+#
+# Each .so carries proper NEEDED entries; Pyodide's recursive dlopen
+# cascades through the graph at load time.
+#
+# GLX is excluded — _tkinter doesn't use OpenGL.
+
+EMX11_ARCHIVES = \
+	$(EMX11_BUILD_DIR)/libX11.a \
+	$(EMX11_BUILD_DIR)/libXext.a \
+	$(EMX11_BUILD_DIR)/libXrender.a \
+	$(EMX11_BUILD_DIR)/libfontconfig.a \
+	$(EMX11_BUILD_DIR)/libXft.a
+
+EMX11_RELINK = -Wl,--whole-archive $< -Wl,--no-whole-archive
+
+$(LIBDIR)/libX11.so: $(EMX11_BUILD_DIR)/libX11.a $(LIBDIR)/libtcl8.6.so
+	emcc $(WASMEH) -sSIDE_MODULE=1 $(OPT) -o $@ \
+		$(EMX11_RELINK) $(LIBDIR)/libtcl8.6.so \
+		-sERROR_ON_UNDEFINED_SYMBOLS=0
+
+$(LIBDIR)/libXext.so: $(EMX11_BUILD_DIR)/libXext.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so
+	emcc $(WASMEH) -sSIDE_MODULE=1 $(OPT) -o $@ \
+		$(EMX11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so \
+		-sERROR_ON_UNDEFINED_SYMBOLS=0
+
+$(LIBDIR)/libXrender.so: $(EMX11_BUILD_DIR)/libXrender.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so
+	emcc $(WASMEH) -sSIDE_MODULE=1 $(OPT) -o $@ \
+		$(EMX11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so \
+		-sERROR_ON_UNDEFINED_SYMBOLS=0
+
+$(LIBDIR)/libfontconfig.so: $(EMX11_BUILD_DIR)/libfontconfig.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so
+	emcc $(WASMEH) -sSIDE_MODULE=1 $(OPT) -o $@ \
+		$(EMX11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so \
+		-sERROR_ON_UNDEFINED_SYMBOLS=0
+
+$(LIBDIR)/libXft.so: $(EMX11_BUILD_DIR)/libXft.a $(LIBDIR)/libX11.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so $(LIBDIR)/libtcl8.6.so
+	emcc $(WASMEH) -sSIDE_MODULE=1 $(OPT) -o $@ \
+		$(EMX11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so $(LIBDIR)/libtcl8.6.so \
+		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
 EMX11_SIDE_MODULES_COPY = $(LIBDIR)/.emx11-side-modules.stamp
 
-$(LIBDIR)/.emx11-side-modules.stamp: $(EMX11_SIDE_MODULES)
-	@for so in $(EMX11_SIDE_MODULES); do \
-		test -f "$$so" || { \
-			echo "ERROR: em-x11 side module not found: $$so"; \
-			echo "Run: cd ../em-x11 && pnpm install && pnpm build:native"; \
-			echo "Make sure EMX11_BUILD_SIDE_MODULE=ON is set in em-x11's cmake."; \
-			exit 1; \
-		}; \
-	done
-	mkdir -p $(LIBDIR)
-	cp -u $(EMX11_SIDE_MODULES) $(LIBDIR)/
+$(LIBDIR)/.emx11-side-modules.stamp: $(LIBDIR)/libX11.so $(LIBDIR)/libXext.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so $(LIBDIR)/libXft.so
 	touch $@
 
 # ---- CPython source + _tkinter.so --------------------------------------

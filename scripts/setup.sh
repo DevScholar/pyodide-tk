@@ -7,7 +7,7 @@
 #
 # External dependencies — detected but NOT fetched. If missing the script
 # prints install instructions and exits; the user installs them and re-runs.
-#   - em-x11       sibling dir, cloned + built
+#   - em-x11       sibling dir, cloned (archives auto-built by make)
 #   - xbuildenv    pyodide xbuildenv install 0.34.3
 set -euo pipefail
 
@@ -43,22 +43,18 @@ EMX11_DIR="${EMX11_DIR:-$SCRIPT_DIR/../em-x11}"
 if [ ! -d "$EMX11_DIR/native/include/X11" ]; then
     echo "ERROR: em-x11 headers not found at $EMX11_DIR/native/include/X11"
     echo ""
-    echo "  em-x11 must be cloned as a sibling directory and built first:"
-    echo "    cd $SCRIPT_DIR/../em-x11"
-    echo "    pnpm install"
-    echo "    pnpm build:native"
+    echo "  em-x11 must be cloned as a sibling directory:"
+    echo "    cd $SCRIPT_DIR/../.."
+    echo "    git clone <em-x11-repo-url> em-x11"
+    echo ""
+    echo "  (No need to run pnpm install in em-x11 — pyodide-tk's Makefile"
+    echo "   builds only the native/ subset directly.)"
     echo ""
     echo "  Then re-run this script."
     exit 1
 fi
 
-if [ ! -f "$EMX11_DIR/build/artifacts/libX11.a" ]; then
-    echo "ERROR: em-x11 not built (headers exist but archives missing)."
-    echo "  Run: cd ../em-x11 && pnpm build:native"
-    exit 1
-fi
-
-echo "em-x11 detected at $EMX11_DIR — OK"
+echo "em-x11 detected at $EMX11_DIR — OK (archives auto-built by make)"
 
 # ---------------------------------------------------------------------------
 # Detect Pyodide xbuildenv (needed for _tkinter's Python.h)

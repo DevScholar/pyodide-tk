@@ -104,4 +104,8 @@ cp -u "$CPYLIB/turtle.py" "$PUB/turtle.py"
 # them (and so the build dir doesn't grow stale copies).
 rm -rf "$PUB/tcl-library" "$PUB/tk-library" "$PUB/tkinter"
 
+# Remove stale side modules that are no longer part of the split set.
+# libwacl.so was an early experiment and is no longer used.
+rm -f "$PUB/lib/libwacl.so"
+
 echo "stage-assets done."
