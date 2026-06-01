@@ -11,7 +11,7 @@
     "pnpm": ">=9"
   },
   "scripts": {
-    "postinstall": "bash scripts/setup.sh",
+    "postinstall": "bash scripts/setup.sh && printf '\\n>> Run \"pnpm build\" to compile pyodide-tk, then \"pnpm dev\" to start.\\n\\n'",
     "build": "pnpm run build:native && pnpm run stage-assets && pnpm run build:web",
     "build:native": "make -j all",
     "build:web": "vite build",
