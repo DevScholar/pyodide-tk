@@ -11,13 +11,23 @@
 #   - xbuildenv    pyodide xbuildenv install 0.34.3
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$SCRIPT_DIR"
+
+# ---------------------------------------------------------------------------
+# Reproducibility-test clone detection (runs on WSL and Git Bash alike)
+# ---------------------------------------------------------------------------
+if echo "$SCRIPT_DIR" | grep -qi reproducibility; then
+    if [ -d .git ]; then
+        rm -rf .git
+        echo "[reproducibility] removed .git from $SCRIPT_DIR — reproducibility-test clone"
+    fi
+fi
+
 if [ "$(uname -s)" != "Linux" ]; then
   echo "ERROR: This project requires Linux. Run from WSL, not Git Bash or Windows."
   exit 1
 fi
-
-SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$SCRIPT_DIR"
 
 # ---------------------------------------------------------------------------
 # Prerequisite check
