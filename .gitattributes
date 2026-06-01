@@ -1,0 +1,2 @@
+# Force LF for shell scripts — CRLF shebangs break on Linux/WSL
+*.sh text eol=lf
