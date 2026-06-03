@@ -145,11 +145,13 @@ $(BUILD)/tk/unix/configure: $(BUILD)/$(TK_TARBALL)
 tkprep: $(BUILD)/tk/unix/configure
 
 $(BUILD)/tk/unix/Makefile: $(BUILD)/tk/unix/configure $(LIBDIR)/libtcl8.6.a
-	chmod +x $(CURDIR)/scripts/xft-config
+	chmod +x $(CURDIR)/scripts/xft-config 2>/dev/null || true
 	cd $(BUILD)/tk/unix && \
 		PATH="$(CURDIR)/scripts:$$PATH" \
 		EMX11_INCLUDES="$(EMX11_INCLUDES)" \
 		EMX11_LIBDIR="$(LIBDIR)" \
+		XFT_CFLAGS="-I$(EMX11_INCLUDES)" \
+		XFT_LIBS="-L$(LIBDIR) -lemx11" \
 		ac_cv_lib_Xft_XftFontOpen=yes \
 		ac_cv_lib_fontconfig_FcFontSort=no \
 		ac_cv_lib_X11_XkbKeycodeToKeysym=yes \

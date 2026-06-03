@@ -549,6 +549,11 @@ async function boot(
 import tkinter, asyncio, js, ctypes
 from pyodide.ffi import run_sync, create_once_callable
 
+# Emscripten has no LANG/LC_ALL; Tcl defaults to iso8859-1.
+# Pin system encoding to utf-8 so msgcat-sourced .msg files
+# (zh_cn.msg etc.) decode correctly.
+tkinter.Tcl().eval('encoding system utf-8')
+
 # tcldide bridge: ::tcldide::dom and ::tcldide::jscall Tcl commands. The .so is
 # loaded globally above; bind Tcldide_Init via ctypes and call it on every
 # Tk root immediately after construction so demos can use the commands
