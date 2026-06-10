@@ -14,7 +14,7 @@ Built on top of [Pyodide](https://pyodide.org/); Tk's X11 calls are handled by t
 - Emscripten 5.0.3 (pinned by Pyodide 314; `emcc` must be on `PATH`)
 - Node.js ≥ 20, pnpm ≥ 9
 - Python ≥ 3.11 with `pyodide-build` and xbuildenv (`pip install pyodide-build && pyodide xbuildenv install 0.34.3`)
-- [em-x11](https://github.com/DevScholar/em-x11) cloned as a sibling directory and built (`pnpm install && pnpm build:native`)
+- [em-x11](https://github.com/DevScholar/em-x11) cloned as a sibling directory (the Makefile auto-builds the native/ subset — no manual build needed)
 - [tcldide](https://github.com/DevScholar/tcldide) cloned as a sibling directory (**optional** — only needed for the `::tcldide::*` Tcl→DOM commands)
 
 # Quick start

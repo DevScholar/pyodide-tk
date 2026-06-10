@@ -20,7 +20,7 @@ below document those deltas so they can be reproduced and audited.
 | Tcl 8.6.15       | tcl-core8.6.15-src      | none           | wasm-EH ABI, side-module relink, cross-compile cv overrides for strtoul/strstr/cpuid |
 | Tk 8.6.15        | tk8.6.15-src            | none           | em-x11 X11 headers, fontconfig disabled, `--disable-xss`, side-module relink |
 | CPython 3.14.2 `_tkinter` | Modules/_tkinter.c | none   | side-module compile against em-x11 + Pyodide xbuildenv `Python.h` |
-| em-x11           | sibling repo            | none           | rebuilt under wasm-EH `-fPIC`, relinked to `libemx11.so` with NEEDED entry |
+| em-x11           | sibling repo            | none           | rebuilt under wasm-EH `-fPIC`, split side modules with proper NEEDED chains |
 | `::tcldide::*` cmds | `../tcldide/opt/tcldide.c` | none           | sibling source compiled as `libtcldide.so` side module; `Tcldide_Init(interp)` invoked via ctypes on every `tkinter.Tk()` |
 | `tkinter` Python | stdlib `Lib/tkinter`    | none           | runtime monkey-patches in worker prelude (`Misc.after`, `Misc.mainloop`, `tkinter.mainloop`, `Misc.quit`, `Tk.__init__`) — see "Runtime Python prelude patches" below |
 
@@ -99,10 +99,13 @@ Source: `wget` of `tk8.6.15-src.tar.gz`, extracted under
 ### Configure
 ```
 PATH="$(CURDIR)/scripts:$$PATH" \
-EMX11_INCLUDES="../em-x11/native/include" \
+EMX11_INCLUDES="$(EMX11_INCLUDES)" \
 EMX11_LIBDIR="$(LIBDIR)" \
+XFT_CFLAGS="-I$(EMX11_INCLUDES)" \
+XFT_LIBS="-L$(LIBDIR) -lemx11" \
 ac_cv_lib_Xft_XftFontOpen=yes \
 ac_cv_lib_fontconfig_FcFontSort=no \
+ac_cv_lib_X11_XkbKeycodeToKeysym=yes \
 cross_compiling=yes \
 emconfigure ./configure \
     --host=wasm32-unknown-emscripten \
@@ -116,8 +119,8 @@ emconfigure ./configure \
 ```
 Same em-x11 redirection trick tcldide uses: real `X11/*.h` headers
 come from em-x11, but no Xlib `.so` is supplied — Tk's unresolved
-X11 symbols stay in the archive and are linked against
-`libemx11.so` at the side-module relink step.
+X11 symbols stay in the archive and are resolved
+against the em-x11 split side modules at the `_tkinter.so` link step.
 
 Differences from tcldide's Tk configure:
 - **`--disable-xss`** is passed explicitly. em-x11 stubs the
@@ -145,8 +148,8 @@ emcc -sSIDE_MODULE=1 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm \
     -sERROR_ON_UNDEFINED_SYMBOLS=0
 ```
 `-sERROR_ON_UNDEFINED_SYMBOLS=0` lets the unresolved Xlib symbols
-through; they bind at the next layer when `_tkinter.so` (or the
-demo loader) lists `libemx11.so` after `libtk8.6.so`.
+through; they bind at dlopen time when `_tkinter.so` pulls in the
+em-x11 split side modules via NEEDED.
 
 ## CPython 3.14.2 `_tkinter` (build-level only)
 
@@ -160,9 +163,10 @@ emcc -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -fPIC -sSIDE_MODULE=1 \
     -DWITH_APPINIT=1 -DPy_BUILD_CORE_BUILTIN=1 \
     -I $(PYINC) -I $(CPYTHON_SRC)/Include/internal -I $(CPYTHON_SRC) \
     -I $(INCDIR) -I $(INCDIR)/tk \
-    --use-port=$(EMX11_DIR)/tools/ports/emx11.py \
+    -I $(EMX11_INCLUDES) \
     _tkinter.c tkappinit.c \
-    libtk8.6.so libtcl8.6.so libemx11.so \
+    libtk8.6.so libtcl8.6.so \
+    libX11.so libXft.so libXrender.so libfontconfig.so \
     -sERROR_ON_UNDEFINED_SYMBOLS=0 \
     -o _tkinter.so
 ```
@@ -173,8 +177,10 @@ emcc -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -fPIC -sSIDE_MODULE=1 \
 - `-DPy_BUILD_CORE_BUILTIN=1` plus `Include/internal/` are required
   because CPython 3.14's `_tkinter.c` references private headers
   (e.g. `pycore_long.h`) under that gate.
-- The trailing `libtk8.6.so libtcl8.6.so libemx11.so` add NEEDED
-  entries; Pyodide's `loadDynlib` then auto-cascades dependencies.
+- The trailing `libtk8.6.so libtcl8.6.so libX11.so libXft.so
+  libXrender.so libfontconfig.so` add NEEDED entries; Pyodide's
+  `loadDynlib` then auto-cascades dependencies through the X11
+  split-module graph.
 
 The Python-side `Lib/tkinter` and `turtle.py` are extracted only
 to be staged separately by `scripts/stage-assets.sh`. Pyodide
@@ -186,30 +192,41 @@ MEMFS at runtime; this is asset packaging, not a CPython patch.
 em-x11 ships as six standard X11 archives (`libX11.a`, `libXext.a`,
 `libXrender.a`, `libfontconfig.a`, `libXft.a`, `libGLX.a`; see
 em-x11 docs). pyodide-tk rebuilds them under the same wasm-EH
-`-fPIC` flags and `--whole-archive`s the five non-GLX archives into
-a single side module (GLX is excluded — `_tkinter` doesn't use
-OpenGL and pulling `glx.c` in would drag the legacy GL emulation
-entry points into the dlopen graph):
+`-fPIC` flags, then relinks each static archive into its own
+SIDE_MODULE with proper NEEDED dependency chains. GLX is excluded —
+`_tkinter` doesn't use OpenGL and pulling `glx.c` in would drag the
+legacy GL emulation entry points into the dlopen graph.
+
+The dependency graph mirrors real X's NEEDED chain:
+
+| Side module       | NEEDED deps                                              |
+|-------------------|----------------------------------------------------------|
+| `libX11.so`       | `libtcl8.6.so`                                           |
+| `libXext.so`      | `libX11.so`, `libtcl8.6.so`                             |
+| `libXrender.so`   | `libX11.so`, `libtcl8.6.so`                             |
+| `libfontconfig.so`| `libX11.so`, `libtcl8.6.so`                             |
+| `libXft.so`       | `libXrender.so`, `libfontconfig.so`, `libX11.so`, `libtcl8.6.so` |
+
+Each `.so` is built with a recipe of the form:
 
 ```
-emcc -sSIDE_MODULE=1 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm \
-    -o libemx11.so \
-    -Wl,--whole-archive \
-    libX11.a libXext.a libXrender.a libfontconfig.a libXft.a \
-    -Wl,--no-whole-archive \
-    libtcl8.6.so \
+emcc -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -Oz -sSIDE_MODULE=1 \
+    -o libXXX.so \
+    -Wl,--whole-archive libXXX.a -Wl,--no-whole-archive \
+    <NEEDED .so files> \
     -sERROR_ON_UNDEFINED_SYMBOLS=0
 ```
 
-The trailing `libtcl8.6.so` is load-bearing: it lands on
-`libemx11.so`'s NEEDED list, which is the only way em-x11's
-`Tcl_SetNotifier` reference resolves at dlopen time. Pyodide
-hard-codes `flags=2` in `loadDynlib`, so an explicit `{global: true}`
-load order is ignored and the NEEDED auto-cascade is the
-mechanism we have to use.
+The trailing `.so` arguments (e.g. `libtcl8.6.so` on every link line)
+are load-bearing: they land on each module's NEEDED list. Pyodide's
+`loadDynlib` auto-cascades through NEEDED entries at dlopen time, so
+the worker only needs to load `libX11.so` and `libXft.so` explicitly —
+the rest resolve recursively. `libtcl8.6.so` is loaded first with
+`global: true` so `Tcl_SetNotifier` (in `libX11`, undefined at build
+time) resolves against it via RTLD_GLOBAL.
 
-`EMX11_HIDE_INTERNAL_SYMBOLS=OFF` keeps `_tkinter` able to reach
-em-x11's stubs.
+`EMX11_HIDE_INTERNAL_SYMBOLS=OFF` is forced during the cmake build so
+every Xlib symbol is visible for export at the side-module relink step.
 
 ## Asset staging (not a patch, but ABI-relevant)
 
@@ -270,8 +287,10 @@ the dependency.
 
 Loaded globally so its `Tcldide_Init` symbol is reachable via ctypes:
 ```ts
-await py._api.loadDynlib('/usr/lib/libtcldide.so', { global: true, allowUndefined: true });
+await pyi.loadDynlib('/usr/lib/libtcldide.so', { global: true });
 ```
+(`allowUndefined: true` is injected by the `pyodideInternals` helper that wraps
+`py._api.loadDynlib`; the worker calls `pyi.loadDynlib` rather than the raw API.)
 
 Then a Python prelude monkey-patches `tkinter.Tk.__init__` so every
 new root automatically registers `::tcldide::*`:
