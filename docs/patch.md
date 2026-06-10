@@ -25,7 +25,7 @@ below document those deltas so they can be reproduced and audited.
 | `tkinter` Python | stdlib `Lib/tkinter`    | none           | runtime monkey-patches in worker prelude (`Misc.after`, `Misc.mainloop`, `tkinter.mainloop`, `Misc.quit`, `Tk.__init__`) — see "Runtime Python prelude patches" below |
 
 Contrast with the sibling [tcldide](../../tcldide/docs/patch.md),
-which inherits a Tcl source patch from the upstream tcldide project.
+which inherits a Tcl source patch from the upstream wacl project.
 pyodide-tk did not need that patch because its targets differ:
 
 - Pyodide ships a known-good emscripten libc, so the `strstr` /
