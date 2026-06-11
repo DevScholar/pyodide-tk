@@ -7,21 +7,21 @@ TKVERSION  ?= 8.6.15
 EMSCRIPTEN ?= $(HOME)/.local/lib/emsdk/upstream/emscripten
 
 # em-x11 supplies our Xlib (X11/*.h tree + split static archives). The
-# emscripten-ports script at tools/ports/emx11.py is the canonical way to
+# emscripten-ports script at tools/ports/em_x11.py is the canonical way to
 # discover include paths (--use-port in compile flags) and archive paths
 # (--use-port in link flags). For the side-module path we still need the
 # raw .a files on disk for --whole-archive relinking, so we build em-x11's
 # native/ subset via cmake and copy the archives.
-EMX11_DIR      ?= $(CURDIR)/../em-x11
-EMX11_INCLUDES  = $(EMX11_DIR)/native/include
-EMX11_PORT      = $(EMX11_DIR)/tools/ports/emx11.py
+EM_X11_DIR      ?= $(CURDIR)/../em-x11
+EM_X11_INCLUDES  = $(EM_X11_DIR)/native/include
+EM_X11_PORT      = $(EM_X11_DIR)/tools/ports/em_x11.py
 
 # em-x11 is auto-built by pyodide-tk (see recipe below). Archives land in
-# $(BUILD)/em-x11/, built from $(EMX11_DIR)/native/ with the flags
-# Pyodide dlopen requires.  EMX11_HIDE_INTERNAL_SYMBOLS=OFF is forced
+# $(BUILD)/em-x11/, built from $(EM_X11_DIR)/native/ with the flags
+# Pyodide dlopen requires.  EM_X11_HIDE_INTERNAL_SYMBOLS=OFF is forced
 # so --whole-archive can see and export every Xlib symbol.
-EMX11_BUILD_DIR = $(BUILD)/em-x11
-EMX11_STAMP     = $(EMX11_BUILD_DIR)/.built
+EM_X11_BUILD_DIR = $(BUILD)/em-x11
+EM_X11_STAMP     = $(EM_X11_BUILD_DIR)/.built
 
 # CPython 3.14.2 source — needed for _tkinter.c. Either reuse the copy
 # pyodide-build's xbuildenv unpacks (`pyodide xbuildenv install 0.34.3`),
@@ -58,11 +58,11 @@ SIDE_LDFLAGS = -sSIDE_MODULE=1 $(WASMEH)
 
 .PHONY: all tclprep tkprep tkinter clean distclean toolcheck smoke-tcl libtcl-so stage cpython-src
 
-all: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(EMX11_SIDE_MODULES_COPY) $(LIBDIR)/libtcldide.so $(TKINTER_OUT)/_tkinter.so stage
+all: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(EM_X11_SIDE_MODULES_COPY) $(LIBDIR)/libtcldide.so $(TKINTER_OUT)/_tkinter.so stage
 
 # Stage built artefacts into public/ so the vite dev server picks them up.
 # Folded into `all` so a fresh clone -> `make` -> `pnpm dev` just works.
-stage: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(EMX11_SIDE_MODULES_COPY) $(LIBDIR)/libtcldide.so $(TKINTER_OUT)/_tkinter.so
+stage: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(EM_X11_SIDE_MODULES_COPY) $(LIBDIR)/libtcldide.so $(TKINTER_OUT)/_tkinter.so
 	bash $(CURDIR)/scripts/stage-assets.sh
 
 # smoke-tcl needs an alias because the recipe doesn't reference the .so by path.
@@ -72,12 +72,12 @@ toolcheck:
 	@echo "== toolcheck =="
 	@which emcc
 	@emcc --version | head -1
-	@test -d "$(EMX11_INCLUDES)/X11" || \
-		(echo "em-x11 headers not found at $(EMX11_INCLUDES)/X11"; exit 1)
-	@test -f "$(EMX11_PORT)" || \
-		(echo "em-x11 port script not found at $(EMX11_PORT)"; exit 1)
-	@echo "em-x11 X11 headers OK: $(EMX11_INCLUDES)/X11"
-	@echo "em-x11 port script OK: $(EMX11_PORT)"
+	@test -d "$(EM_X11_INCLUDES)/X11" || \
+		(echo "em-x11 headers not found at $(EM_X11_INCLUDES)/X11"; exit 1)
+	@test -f "$(EM_X11_PORT)" || \
+		(echo "em-x11 port script not found at $(EM_X11_PORT)"; exit 1)
+	@echo "em-x11 X11 headers OK: $(EM_X11_INCLUDES)/X11"
+	@echo "em-x11 port script OK: $(EM_X11_PORT)"
 	@echo "BUILD=$(BUILD)"
 
 # ---- Tcl ---------------------------------------------------------------
@@ -129,7 +129,7 @@ $(LIBDIR)/libtcl8.6.so: $(LIBDIR)/libtcl8.6.a
 # Stock Tk 8.6 against em-x11's Xlib. Same trick as tcldide: --with-x
 # uses real X11/*.h, but no Xlib.so to link against -- libtk.a will
 # carry unresolved Xlib symbols, resolved at libtk-so link time by
-# libemx11 (or as undefined symbols satisfied by the host JS bridge).
+# libem_x11 (or as undefined symbols satisfied by the host JS bridge).
 # Disable optional deps tcldide also disables for the first cut.
 
 $(BUILD)/$(TK_TARBALL):
@@ -148,10 +148,10 @@ $(BUILD)/tk/unix/Makefile: $(BUILD)/tk/unix/configure $(LIBDIR)/libtcl8.6.a
 	chmod +x $(CURDIR)/scripts/xft-config 2>/dev/null || true
 	cd $(BUILD)/tk/unix && \
 		PATH="$(CURDIR)/scripts:$$PATH" \
-		EMX11_INCLUDES="$(EMX11_INCLUDES)" \
-		EMX11_LIBDIR="$(LIBDIR)" \
-		XFT_CFLAGS="-I$(EMX11_INCLUDES)" \
-		XFT_LIBS="-L$(LIBDIR) -lemx11" \
+		EM_X11_INCLUDES="$(EM_X11_INCLUDES)" \
+		EM_X11_LIBDIR="$(LIBDIR)" \
+		XFT_CFLAGS="-I$(EM_X11_INCLUDES)" \
+		XFT_LIBS="-L$(LIBDIR) -lem_x11" \
 		ac_cv_lib_Xft_XftFontOpen=yes \
 		ac_cv_lib_fontconfig_FcFontSort=no \
 		ac_cv_lib_X11_XkbKeycodeToKeysym=yes \
@@ -160,14 +160,14 @@ $(BUILD)/tk/unix/Makefile: $(BUILD)/tk/unix/configure $(LIBDIR)/libtcl8.6.a
 		--host=wasm32-unknown-emscripten \
 		--prefix=$(PREFIX) \
 		--with-tcl=$(LIBDIR) \
-		--x-includes=$(EMX11_INCLUDES) \
+		--x-includes=$(EM_X11_INCLUDES) \
 		--x-libraries=$(LIBDIR) \
 		--disable-threads --disable-load --disable-shared \
 		--disable-xss \
 		CFLAGS="$(CFLAGS_X)" LDFLAGS="$(LDFLAGS_X)"
 	# Force our flags + header order over what configure's probe inserts.
 	cd $(BUILD)/tk/unix && sed -i 's/-O2//g' Makefile
-	cd $(BUILD)/tk/unix && sed -i 's|^X11_INCLUDES[[:space:]]*=.*|X11_INCLUDES = -I$(EMX11_INCLUDES)|' Makefile
+	cd $(BUILD)/tk/unix && sed -i 's|^X11_INCLUDES[[:space:]]*=.*|X11_INCLUDES = -I$(EM_X11_INCLUDES)|' Makefile
 
 $(BUILD)/tk/unix/libtk8.6.a: $(BUILD)/tk/unix/Makefile
 	cd $(BUILD)/tk/unix && emmake make -j libtk8.6.a libtkstub8.6.a
@@ -211,7 +211,7 @@ smoke-tcl: libtcl-so
 
 # ---- em-x11 build (auto) -------------------------------------------------
 # Builds em-x11 static archives from the sibling repo's native/ source into
-# $(BUILD)/em-x11/.  EMX11_HIDE_INTERNAL_SYMBOLS=OFF is forced so that
+# $(BUILD)/em-x11/.  EM_X11_HIDE_INTERNAL_SYMBOLS=OFF is forced so that
 # --whole-archive can see and export every Xlib symbol during the side-module
 # relink step below.
 #
@@ -223,22 +223,22 @@ smoke-tcl: libtcl-so
 # libXrender, libfontconfig, libXft).  Third-party libs and demos are
 # skipped — pyodide-tk doesn't need them.
 
-$(EMX11_STAMP): $(EMX11_DIR)/native/CMakeLists.txt
-	@echo "==> Configuring em-x11 (native subset) into $(EMX11_BUILD_DIR)"
-	rm -rf $(EMX11_BUILD_DIR)
-	mkdir -p $(EMX11_BUILD_DIR)
-	cd $(EMX11_BUILD_DIR) && emcmake cmake -S $(EMX11_DIR)/native -B . \
+$(EM_X11_STAMP): $(EM_X11_DIR)/native/CMakeLists.txt
+	@echo "==> Configuring em-x11 (native subset) into $(EM_X11_BUILD_DIR)"
+	rm -rf $(EM_X11_BUILD_DIR)
+	mkdir -p $(EM_X11_BUILD_DIR)
+	cd $(EM_X11_BUILD_DIR) && emcmake cmake -S $(EM_X11_DIR)/native -B . \
 		-DCMAKE_BUILD_TYPE=Release \
-		-DEMX11_HIDE_INTERNAL_SYMBOLS=OFF
+		-DEM_X11_HIDE_INTERNAL_SYMBOLS=OFF
 	@echo "==> Building em-x11 archives"
-	$(MAKE) -C $(EMX11_BUILD_DIR) -j
+	$(MAKE) -C $(EM_X11_BUILD_DIR) -j
 	touch $@
 
-$(EMX11_BUILD_DIR)/libX11.a: $(EMX11_STAMP)
-$(EMX11_BUILD_DIR)/libXext.a: $(EMX11_STAMP)
-$(EMX11_BUILD_DIR)/libXrender.a: $(EMX11_STAMP)
-$(EMX11_BUILD_DIR)/libfontconfig.a: $(EMX11_STAMP)
-$(EMX11_BUILD_DIR)/libXft.a: $(EMX11_STAMP)
+$(EM_X11_BUILD_DIR)/libX11.a: $(EM_X11_STAMP)
+$(EM_X11_BUILD_DIR)/libXext.a: $(EM_X11_STAMP)
+$(EM_X11_BUILD_DIR)/libXrender.a: $(EM_X11_STAMP)
+$(EM_X11_BUILD_DIR)/libfontconfig.a: $(EM_X11_STAMP)
+$(EM_X11_BUILD_DIR)/libXft.a: $(EM_X11_STAMP)
 
 # ---- em-x11 split side modules ------------------------------------------
 # Relink each static archive into a proper SIDE_MODULE.  Dependencies mirror
@@ -254,43 +254,43 @@ $(EMX11_BUILD_DIR)/libXft.a: $(EMX11_STAMP)
 #
 # GLX is excluded — _tkinter doesn't use OpenGL.
 
-EMX11_ARCHIVES = \
-	$(EMX11_BUILD_DIR)/libX11.a \
-	$(EMX11_BUILD_DIR)/libXext.a \
-	$(EMX11_BUILD_DIR)/libXrender.a \
-	$(EMX11_BUILD_DIR)/libfontconfig.a \
-	$(EMX11_BUILD_DIR)/libXft.a
+EM_X11_ARCHIVES = \
+	$(EM_X11_BUILD_DIR)/libX11.a \
+	$(EM_X11_BUILD_DIR)/libXext.a \
+	$(EM_X11_BUILD_DIR)/libXrender.a \
+	$(EM_X11_BUILD_DIR)/libfontconfig.a \
+	$(EM_X11_BUILD_DIR)/libXft.a
 
-EMX11_RELINK = -Wl,--whole-archive $< -Wl,--no-whole-archive
+EM_X11_RELINK = -Wl,--whole-archive $< -Wl,--no-whole-archive
 
-$(LIBDIR)/libX11.so: $(EMX11_BUILD_DIR)/libX11.a $(LIBDIR)/libtcl8.6.so
+$(LIBDIR)/libX11.so: $(EM_X11_BUILD_DIR)/libX11.a $(LIBDIR)/libtcl8.6.so
 	emcc $(WASMEH) -sSIDE_MODULE=1 $(OPT) -o $@ \
-		$(EMX11_RELINK) $(LIBDIR)/libtcl8.6.so \
+		$(EM_X11_RELINK) $(LIBDIR)/libtcl8.6.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
-$(LIBDIR)/libXext.so: $(EMX11_BUILD_DIR)/libXext.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so
+$(LIBDIR)/libXext.so: $(EM_X11_BUILD_DIR)/libXext.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so
 	emcc $(WASMEH) -sSIDE_MODULE=1 $(OPT) -o $@ \
-		$(EMX11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so \
+		$(EM_X11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
-$(LIBDIR)/libXrender.so: $(EMX11_BUILD_DIR)/libXrender.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so
+$(LIBDIR)/libXrender.so: $(EM_X11_BUILD_DIR)/libXrender.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so
 	emcc $(WASMEH) -sSIDE_MODULE=1 $(OPT) -o $@ \
-		$(EMX11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so \
+		$(EM_X11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
-$(LIBDIR)/libfontconfig.so: $(EMX11_BUILD_DIR)/libfontconfig.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so
+$(LIBDIR)/libfontconfig.so: $(EM_X11_BUILD_DIR)/libfontconfig.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so
 	emcc $(WASMEH) -sSIDE_MODULE=1 $(OPT) -o $@ \
-		$(EMX11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so \
+		$(EM_X11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
-$(LIBDIR)/libXft.so: $(EMX11_BUILD_DIR)/libXft.a $(LIBDIR)/libX11.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so $(LIBDIR)/libtcl8.6.so
+$(LIBDIR)/libXft.so: $(EM_X11_BUILD_DIR)/libXft.a $(LIBDIR)/libX11.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so $(LIBDIR)/libtcl8.6.so
 	emcc $(WASMEH) -sSIDE_MODULE=1 $(OPT) -o $@ \
-		$(EMX11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so $(LIBDIR)/libtcl8.6.so \
+		$(EM_X11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so $(LIBDIR)/libtcl8.6.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
-EMX11_SIDE_MODULES_COPY = $(LIBDIR)/.emx11-side-modules.stamp
+EM_X11_SIDE_MODULES_COPY = $(LIBDIR)/.em-x11-side-modules.stamp
 
-$(LIBDIR)/.emx11-side-modules.stamp: $(LIBDIR)/libX11.so $(LIBDIR)/libXext.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so $(LIBDIR)/libXft.so
+$(LIBDIR)/.em-x11-side-modules.stamp: $(LIBDIR)/libX11.so $(LIBDIR)/libXext.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so $(LIBDIR)/libXft.so
 	touch $@
 
 # ---- CPython source + _tkinter.so --------------------------------------
@@ -342,13 +342,13 @@ $(PYINC)/Python.h:
 
 tkinter: $(TKINTER_OUT)/_tkinter.so
 
-$(TKINTER_OUT)/_tkinter.so: $(CPYTHON_SRC)/_tkinter.c $(LIBDIR)/libtk8.6.so $(LIBDIR)/libtcl8.6.so $(EMX11_SIDE_MODULES_COPY) $(PYINC)/Python.h
+$(TKINTER_OUT)/_tkinter.so: $(CPYTHON_SRC)/_tkinter.c $(LIBDIR)/libtk8.6.so $(LIBDIR)/libtcl8.6.so $(EM_X11_SIDE_MODULES_COPY) $(PYINC)/Python.h
 	mkdir -p $(TKINTER_OUT)
 	emcc $(WASMEH) $(SIDE_CC) -sSIDE_MODULE=1 \
 		-DWITH_APPINIT=1 -DPy_BUILD_CORE_BUILTIN=1 \
 		-I $(PYINC) -I $(CPYTHON_SRC)/Include/internal -I $(CPYTHON_SRC) \
 		-I $(INCDIR) -I $(INCDIR)/tk \
-		-I $(EMX11_INCLUDES) \
+		-I $(EM_X11_INCLUDES) \
 		$(CPYTHON_SRC)/_tkinter.c $(CPYTHON_SRC)/tkappinit.c \
 		$(LIBDIR)/libtk8.6.so $(LIBDIR)/libtcl8.6.so \
 		$(LIBDIR)/libX11.so $(LIBDIR)/libXft.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so \

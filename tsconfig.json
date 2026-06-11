@@ -17,7 +17,7 @@
     "types": ["vite/client", "node"],
 
     "paths": {
-      "@emx11/*": ["../em-x11/src/*"]
+      "@emX11/*": ["../em-x11/src/*"]
     }
   },
   "include": ["src/**/*.ts", "demos/**/*.ts", "vite.config.ts"],

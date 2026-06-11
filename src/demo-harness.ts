@@ -13,8 +13,8 @@
  * accumulate workers (each pumping Tcl forever) and zombie listeners.
  */
 
-import { keyEventToKeysym, keyEventToKeycode, modifiersFromEvent } from '@emx11/runtime/keymap.js';
-import { createDomTextInputBridge } from '@emx11/index.js';
+import { keyEventToKeysym, keyEventToKeycode, modifiersFromEvent } from '@emX11/runtime/keymap.js';
+import { createDomTextInputBridge } from '@emX11/index.js';
 import type {
   WorkerInboundMessage,
   WorkerOutboundMessage,
@@ -121,7 +121,7 @@ export function runDemo(opts: RunDemoOptions): DemoHandle {
         ime.applyPosition(msg.absX, msg.absY);
         break;
       case 'clipboardWrite': {
-        /* Tk copied bytes via XSetSelectionOwner(CLIPBOARD); libemx11's
+        /* Tk copied bytes via XSetSelectionOwner(CLIPBOARD); libem_x11's
          * write bridge forwarded them here because the worker can't
          * reliably call navigator.clipboard.writeText. The DOM main
          * thread holds the permission. */
@@ -246,8 +246,8 @@ export function runDemo(opts: RunDemoOptions): DemoHandle {
    * (Ctrl+V / Cmd+V / Shift+Insert keydown, or a document `paste`),
    * fetch the OS clipboard bytes on the main thread (where the
    * navigator.clipboard permission lives) and post them to the worker
-   * BEFORE the keydown forwards. libemx11's
-   * emx11_js_clipboard_read_begin / _fetch in the worker realm then
+   * BEFORE the keydown forwards. libem_x11's
+   * em_x11_js_clipboard_read_begin / _fetch in the worker realm then
    * find data when Tk's XConvertSelection synchronously asks for it.
    *
    * Document `paste` carries the bytes inline via ClipboardEvent

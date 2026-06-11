@@ -48,10 +48,10 @@ fi
 # ---------------------------------------------------------------------------
 # Detect em-x11 (user's responsibility — we only check, never fetch)
 # ---------------------------------------------------------------------------
-EMX11_DIR="${EMX11_DIR:-$SCRIPT_DIR/../em-x11}"
+EM_X11_DIR="${EM_X11_DIR:-$SCRIPT_DIR/../em-x11}"
 
-if [ ! -d "$EMX11_DIR/native/include/X11" ]; then
-    echo "ERROR: em-x11 headers not found at $EMX11_DIR/native/include/X11"
+if [ ! -d "$EM_X11_DIR/native/include/X11" ]; then
+    echo "ERROR: em-x11 headers not found at $EM_X11_DIR/native/include/X11"
     echo ""
     echo "  em-x11 must be cloned as a sibling directory:"
     echo "    cd $SCRIPT_DIR/../.."
@@ -64,7 +64,7 @@ if [ ! -d "$EMX11_DIR/native/include/X11" ]; then
     exit 1
 fi
 
-echo "em-x11 detected at $EMX11_DIR — OK (archives auto-built by make)"
+echo "em-x11 detected at $EM_X11_DIR — OK (archives auto-built by make)"
 
 # ---------------------------------------------------------------------------
 # Detect Pyodide xbuildenv (needed for _tkinter's Python.h)

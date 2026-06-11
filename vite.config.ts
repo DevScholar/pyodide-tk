@@ -56,7 +56,7 @@ export default defineConfig({
       // em-x11 is consumed via relative TS source so changes there are
       // picked up live; in production we'd publish em-x11 as a workspace
       // package.
-      '@emx11': resolve(__dirname, '../em-x11/src'),
+      '@emX11': resolve(__dirname, '../em-x11/src'),
     },
   },
 

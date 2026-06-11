@@ -99,10 +99,10 @@ Source: `wget` of `tk8.6.15-src.tar.gz`, extracted under
 ### Configure
 ```
 PATH="$(CURDIR)/scripts:$$PATH" \
-EMX11_INCLUDES="$(EMX11_INCLUDES)" \
-EMX11_LIBDIR="$(LIBDIR)" \
-XFT_CFLAGS="-I$(EMX11_INCLUDES)" \
-XFT_LIBS="-L$(LIBDIR) -lemx11" \
+EM_X11_INCLUDES="$(EM_X11_INCLUDES)" \
+EM_X11_LIBDIR="$(LIBDIR)" \
+XFT_CFLAGS="-I$(EM_X11_INCLUDES)" \
+XFT_LIBS="-L$(LIBDIR) -lemX11" \
 ac_cv_lib_Xft_XftFontOpen=yes \
 ac_cv_lib_fontconfig_FcFontSort=no \
 ac_cv_lib_X11_XkbKeycodeToKeysym=yes \
@@ -111,7 +111,7 @@ emconfigure ./configure \
     --host=wasm32-unknown-emscripten \
     --prefix=$(PREFIX) \
     --with-tcl=$(LIBDIR) \
-    --x-includes=$(EMX11_INCLUDES) \
+    --x-includes=$(EM_X11_INCLUDES) \
     --x-libraries=$(LIBDIR) \
     --disable-threads --disable-load --disable-shared \
     --disable-xss \
@@ -128,13 +128,13 @@ Differences from tcldide's Tk configure:
   feature detection picks them up incorrectly under
   `cross_compiling=yes`; disabling the screen-saver extension keeps
   the Tk build self-consistent.
-- `EMX11_LIBDIR` points into the local `build/install/lib` rather
+- `EM_X11_LIBDIR` points into the local `build/install/lib` rather
   than em-x11's own `build/artifacts`, so configure caches the
   link path that the side-module relink will consume.
 
 Post-configure sed:
 - strip `-O2` (preserves `-Oz` from `CFLAGS_X`).
-- force `X11_INCLUDES = -I$(EMX11_INCLUDES)` so em-x11's headers
+- force `X11_INCLUDES = -I$(EM_X11_INCLUDES)` so em-x11's headers
   win over anything the X probe inserted.
 
 A `scripts/xft-config` shim on `PATH` answers `--cflags`/`--libs`
@@ -163,7 +163,7 @@ emcc -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -fPIC -sSIDE_MODULE=1 \
     -DWITH_APPINIT=1 -DPy_BUILD_CORE_BUILTIN=1 \
     -I $(PYINC) -I $(CPYTHON_SRC)/Include/internal -I $(CPYTHON_SRC) \
     -I $(INCDIR) -I $(INCDIR)/tk \
-    -I $(EMX11_INCLUDES) \
+    -I $(EM_X11_INCLUDES) \
     _tkinter.c tkappinit.c \
     libtk8.6.so libtcl8.6.so \
     libX11.so libXft.so libXrender.so libfontconfig.so \
@@ -225,7 +225,7 @@ the rest resolve recursively. `libtcl8.6.so` is loaded first with
 `global: true` so `Tcl_SetNotifier` (in `libX11`, undefined at build
 time) resolves against it via RTLD_GLOBAL.
 
-`EMX11_HIDE_INTERNAL_SYMBOLS=OFF` is forced during the cmake build so
+`EM_X11_HIDE_INTERNAL_SYMBOLS=OFF` is forced during the cmake build so
 every Xlib symbol is visible for export at the side-module relink step.
 
 ## Asset staging (not a patch, but ABI-relevant)
@@ -347,11 +347,11 @@ take effect inside the worker realm pyodide-tk runs.
 
 The worker also installs a JS-side pair to back the prelude:
 
-- **`globalThis._emx11_park()`** returns a `Promise<void>` that
+- **`globalThis._em_x11_park()`** returns a `Promise<void>` that
   resolves on the next notifier wake (Tcl timer expiry, alert) or
   main-thread input message. Used by the mainloop patch as its
   per-iteration idle point.
-- **`globalThis._emx11_set_mainloop_active(bool)`** gates the
+- **`globalThis._em_x11_set_mainloop_active(bool)`** gates the
   JS-side adaptive pump (`runDrain`) so it does not race the
   Python-side mainloop on `dooneevent`.
 
@@ -384,7 +384,7 @@ unchanged.
 
 **Why.** The Tcl-level sync `after delay` busy-loops
 `Tcl_DoOneEvent` against wallclock until the time elapses. Our
-libemx11/libtcl/libtk are built without Asyncify (Pyodide 314 ships
+libem_x11/libtcl/libtk are built without Asyncify (Pyodide 314 ships
 JSPI instead), so emscripten's `emscripten_sleep(1)` inside em-x11's
 notifier resolves to a no-op stub — the busy loop never yields to
 JS, the browser never composites, and turtle's per-step
@@ -404,16 +404,16 @@ composites the post-update state.
 ### `tkinter.Misc.mainloop` / `tkinter.mainloop` — blocking shallow-suspend loop
 
 **Patch shape.** Replace both entry points with a Python loop that
-- snapshots `_emx11_quit_count[0]` as `target`,
-- sets `_emx11_set_mainloop_active(True)`,
+- snapshots `_em_x11_quit_count[0]` as `target`,
+- sets `_em_x11_set_mainloop_active(True)`,
 - repeatedly drains `tkapp.dooneevent(TCL_DONT_WAIT)` until the
   queue empties or a callback bumps the quit counter,
 - on each outer iteration suspends exactly **once** via
-  `run_sync(_emx11_park())` until the JS notifier or an input
+  `run_sync(_em_x11_park())` until the JS notifier or an input
   message wakes the worker,
-- exits when `_emx11_quit_count[0] != target`,
+- exits when `_em_x11_quit_count[0] != target`,
 - on exit decrements the counter (consuming the quit level) and
-  clears `_emx11_set_mainloop_active(False)`.
+  clears `_em_x11_set_mainloop_active(False)`.
 
 **Why this specific shape.** Two failure modes had to be avoided:
 
@@ -432,7 +432,7 @@ composites the post-update state.
 
 The shallow-suspend loop sidesteps both. The outer `while not quit`
 is plain Python — no JSPI suspension across iterations. Only the
-inner `run_sync(_emx11_park())` suspends, and that continuation
+inner `run_sync(_em_x11_park())` suspends, and that continuation
 resolves on the next macrotask (the next JS notifier wake or input
 message), so V8 holds at most one continuation snapshot at any
 moment. Idle CPU is 0% — the worker parks the same way a Linux X11
@@ -441,7 +441,7 @@ client parks in `select()`.
 **Quit accounting.** Stock `tkinter.Misc.quit()` calls into
 `Tkapp_Quit`, which sets a static flag inside `_tkinter.c` that the
 bundled `Tkapp_MainLoop` reads. We don't run that mainloop, so the
-patch installs `_emx11_quit_count` as a Python-level mirror and
+patch installs `_em_x11_quit_count` as a Python-level mirror and
 wraps `Misc.quit` to bump it. Using a counter (not a bool) preserves
 nested-mainloop semantics: a modal dialog calling `mainloop()`
 inside an outer `mainloop()` pops exactly one level per `quit()`.
@@ -453,7 +453,7 @@ this path; the blocking behaviour now matches desktop tkinter.
 ### `tkinter.Misc.quit` — bump the Python-level quit counter
 
 **Patch shape.** Wrap `Misc.quit` so each call increments
-`_emx11_quit_count[0]` before delegating to the original. Exceptions
+`_em_x11_quit_count[0]` before delegating to the original. Exceptions
 from the original (e.g. on a destroyed interpreter) are swallowed —
 the counter bump is what our mainloop loop reads.
 
@@ -464,7 +464,7 @@ maintainer searching for `Misc.quit` should find an entry.
 ### JS-side pump gating
 
 Not a Python patch, but tightly coupled to `Misc.mainloop`. While
-`_emx11_set_mainloop_active(True)` is in effect, `runDrain` returns
+`_em_x11_set_mainloop_active(True)` is in effect, `runDrain` returns
 early so the JS-side adaptive pump does not race the Python loop on
 `dooneevent`. The flag clears when mainloop exits, and `runDrain` is
 kicked once to handle any events that queued during teardown. This

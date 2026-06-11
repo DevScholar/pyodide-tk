@@ -17,8 +17,8 @@
  * input.
  */
 
-import { createEmX11, type EmX11 } from '@emx11/index.js';
-import { makeSideModuleSurface } from '@emx11/host/connection.js';
+import { createEmX11, type EmX11 } from '@emX11/index.js';
+import { makeSideModuleSurface } from '@emX11/host/connection.js';
 import type {
   WorkerInboundMessage,
   WorkerOutboundMessage,
@@ -108,15 +108,15 @@ function onTextKey(t: TextKeyRelay): void {
 }
 
 /** main → worker: clipboard bytes pre-fetched ahead of a paste action.
- *  libemx11's emx11_js_clipboard_read_begin reads
- *  globalThis.__emx11ClipboardBytes synchronously from this realm; the
+ *  libem_x11's em_x11_js_clipboard_read_begin reads
+ *  globalThis.__emX11ClipboardBytes synchronously from this realm; the
  *  main thread can't touch the worker's globalThis so it has to relay
  *  via postMessage. */
 function onClipboardStage(bytes: Uint8Array): void {
   /* Defensive copy: the Uint8Array we receive may be backed by a
-   * transferred buffer; libemx11 wants to mutate / null-out the cache
+   * transferred buffer; libem_x11 wants to mutate / null-out the cache
    * via _fetch, and the buffer must outlive the postMessage frame. */
-  (globalThis as { __emx11ClipboardBytes?: Uint8Array | null }).__emx11ClipboardBytes =
+  (globalThis as { __emX11ClipboardBytes?: Uint8Array | null }).__emX11ClipboardBytes =
     bytes && bytes.byteLength > 0 ? new Uint8Array(bytes) : null;
 }
 
@@ -132,7 +132,7 @@ let wakePump: () => void = () => {};
  * Pyodide does not yet expose `loadDynlib`, the in-memory exports table
  * (`_module.LDSO.loadedLibsByName`), or memory marshalling helpers
  * (`_malloc`/`stringToUTF8`) on its public surface. We need all three to
- * stand up libemx11/_tkinter and to bind libemx11's exports as the
+ * stand up libem_x11/_tkinter and to bind libem_x11's exports as the
  * em-x11 default module before _tkinter loads.
  *
  * Concentrating the casts here keeps the rest of boot() typed against
@@ -254,7 +254,7 @@ async function boot(
 
   /* --- Stage: em-x11 host (must precede libX11.so dlopen) ---
    *
-   * The EM_JS bridges in libX11 read Module['emx11Host'] synchronously
+   * The EM_JS bridges in libX11 read Module['emX11Host'] synchronously
    * from each X call; createEmX11/connection.open sets this slot.
    *
    * textInputRemote: forward XSetICFocus / Tk_SetCaretPos commands
@@ -277,8 +277,8 @@ async function boot(
     },
   });
 
-  /* Tk wrote to CLIPBOARD: libemx11's emx11_js_clipboard_write_utf8
-   * reads Module['emx11Host'].clipboardWriteRemote. Worker realm has
+  /* Tk wrote to CLIPBOARD: libem_x11's em_x11_js_clipboard_write_utf8
+   * reads Module['emX11Host'].clipboardWriteRemote. Worker realm has
    * no reliable navigator.clipboard.writeText (no user activation
    * across the thread boundary), so we post the bytes back to main
    * where the DOM holds the permission. Install the hook on the
@@ -299,7 +299,7 @@ async function boot(
     post({ type: 'cursorChange', css });
   });
 
-  /* Install the Tcl notifier wake target. libemx11's notifier.c
+  /* Install the Tcl notifier wake target. libem_x11's notifier.c
    * (real_SetTimer / real_AlertNotifier) forwards Tcl's standardised
    * setTimerProc + alertNotifierProc here. The pump is then purely
    * event-driven: drain only when woken (by an X event from input,
@@ -382,8 +382,8 @@ async function boot(
    * worker global so the Python prelude can reach them via `js.<name>`.
    * Kept attached to the typed `ctx` (DedicatedWorkerGlobalScope) cast,
    * not bare `self`, to keep TS happy. */
-  (ctx as unknown as Record<string, unknown>)._emx11_park = parkUntilWake;
-  (ctx as unknown as Record<string, unknown>)._emx11_set_mainloop_active = (v: boolean): void => {
+  (ctx as unknown as Record<string, unknown>)._em_x11_park = parkUntilWake;
+  (ctx as unknown as Record<string, unknown>)._em_x11_set_mainloop_active = (v: boolean): void => {
     mainloopActive = v;
     if (!v) requestPump();
   };
@@ -453,10 +453,10 @@ async function boot(
 
   /* Browser-friendly Tcl notifier must be installed BEFORE Tk_Init. */
   const libX11Exports = pyi.loadedLibExports('/usr/lib/libX11.so');
-  if (!libX11Exports?.emx11_install_browser_notifier) {
-    throw new Error('emx11_install_browser_notifier not found in libX11 exports');
+  if (!libX11Exports?.em_x11_install_browser_notifier) {
+    throw new Error('em_x11_install_browser_notifier not found in libX11 exports');
   }
-  (libX11Exports.emx11_install_browser_notifier as () => void)();
+  (libX11Exports.em_x11_install_browser_notifier as () => void)();
 
   /* Pre-bind libX11's exports as the default module for ANY future
    * XOpenDisplay. Doing this BEFORE _tkinter loads means tkinter.Tk()'s
@@ -486,7 +486,7 @@ async function boot(
    * Patch -- tkinter.Misc.after(ms) sync sleep:
    * The no-callback variant of Misc.after lowers to Tcl's sync
    * `after delay`, which busy-loops Tcl_DoOneEvent under wallclock
-   * until the time elapses. libemx11/libtcl/libtk are built without
+   * until the time elapses. libem_x11/libtcl/libtk are built without
    * Asyncify (Pyodide 314 uses JSPI instead) so emscripten_sleep(1)
    * inside em-x11's notifier resolves to a no-op stub. Without a
    * yield, turtle's per-step _cv.after(delay) burns ~7s of CPU
@@ -521,7 +521,7 @@ async function boot(
    * Shallow-suspend fix: keep the outer "block until quit" loop as
    * plain Python, drain everything pending via
    * `dooneevent(TCL_DONT_WAIT)` until the queue empties, then suspend
-   * exactly *once* per iteration on `js._emx11_park()` -- a Promise
+   * exactly *once* per iteration on `js._em_x11_park()` -- a Promise
    * that resolves the next time the JS-side notifier wake fires
    * (timer expiry, alert, or main-thread input message). Each
    * suspended continuation is shallow (one Python frame, one
@@ -533,7 +533,7 @@ async function boot(
    * level snapshots the counter on entry and exits when it bumps.
    *
    * The JS pump (see `runDrain` above) is gated off via
-   * `_emx11_set_mainloop_active` while mainloop owns the event loop,
+   * `_em_x11_set_mainloop_active` while mainloop owns the event loop,
    * so the two don't race on `dooneevent`. After mainloop returns,
    * the gate is released and the pump resumes for any post-mainloop
    * Python work that still wants live widgets.
@@ -576,7 +576,7 @@ try:
 except OSError:
     pass
 
-async def _emx11_yield_frame():
+async def _em_x11_yield_frame():
     fut = asyncio.get_event_loop().create_future()
     # create_once_callable: keep the Python callback alive until JS
     # actually fires it. A bare lambda would be a borrowed proxy that
@@ -584,13 +584,13 @@ async def _emx11_yield_frame():
     js.setTimeout(create_once_callable(lambda: fut.set_result(None)), 0)
     await fut
 
-_emx11_orig_after = tkinter.Misc.after
-def _emx11_yielding_after(self, ms, func=None, *args):
+_em_x11_orig_after = tkinter.Misc.after
+def _em_x11_yielding_after(self, ms, func=None, *args):
     if func is None:
         run_sync(asyncio.sleep(ms / 1000))
         return None
-    return _emx11_orig_after(self, ms, func, *args)
-tkinter.Misc.after = _emx11_yielding_after
+    return _em_x11_orig_after(self, ms, func, *args)
+tkinter.Misc.after = _em_x11_yielding_after
 
 # Quit accounting. Stock tkinter.Misc.quit calls into Tcl-side
 # Tkapp_Quit, which sets a static flag inside _tkinter.c that the
@@ -599,64 +599,64 @@ tkinter.Misc.after = _emx11_yielding_after
 # snapshots it on entry and exits when it bumps. Counter (not bool)
 # preserves nested-mainloop semantics: a modal dialog calling mainloop
 # inside an outer mainloop pops exactly one level per quit.
-_emx11_quit_count = [0]
-_emx11_orig_quit = tkinter.Misc.quit
-def _emx11_quit(self):
-    _emx11_quit_count[0] += 1
+_em_x11_quit_count = [0]
+_em_x11_orig_quit = tkinter.Misc.quit
+def _em_x11_quit(self):
+    _em_x11_quit_count[0] += 1
     try:
-        _emx11_orig_quit(self)
+        _em_x11_orig_quit(self)
     except Exception:
         # On a destroyed interpreter the Tcl call can raise; the Python
         # counter is what our mainloop reads, so the bump is what matters.
         pass
-tkinter.Misc.quit = _emx11_quit
+tkinter.Misc.quit = _em_x11_quit
 
 # TCL_DONT_WAIT = 2; passing only this flag means "process any ready
 # event of any type, do not block" (Tcl_DoOneEvent docs: "If no event
 # type flags are given, all event types are processed").
-_EMX11_TCL_DONT_WAIT = 2
+_EM_X11_TCL_DONT_WAIT = 2
 
-async def _emx11_park():
+async def _em_x11_park():
     # Resolved by worker.ts on the next notifier wake or input message.
     # Returns a Promise; await it to suspend the Python stack via JSPI.
-    await js._emx11_park()
+    await js._em_x11_park()
 
-def _emx11_misc_mainloop(self, n=0):
-    target = _emx11_quit_count[0]
+def _em_x11_misc_mainloop(self, n=0):
+    target = _em_x11_quit_count[0]
     tkapp = self.tk
-    js._emx11_set_mainloop_active(True)
+    js._em_x11_set_mainloop_active(True)
     try:
-        while _emx11_quit_count[0] == target:
+        while _em_x11_quit_count[0] == target:
             # Drain everything Tcl has queued without sleeping. Callbacks
             # (button -command, <Key> bind) re-enter Python here; if one
             # calls Misc.quit, the counter bumps and the outer while exits.
             try:
-                while tkapp.dooneevent(_EMX11_TCL_DONT_WAIT):
-                    if _emx11_quit_count[0] != target:
+                while tkapp.dooneevent(_EM_X11_TCL_DONT_WAIT):
+                    if _em_x11_quit_count[0] != target:
                         break
             except Exception:
                 # Interpreter went away (root.destroy) -- treat as quit.
                 break
-            if _emx11_quit_count[0] != target:
+            if _em_x11_quit_count[0] != target:
                 break
             # One shallow JSPI suspend per iteration. Park until the JS
             # side gets a real wake (notifier timer, alert, input msg).
-            run_sync(_emx11_park())
+            run_sync(_em_x11_park())
     finally:
         # Consume one quit level so a future mainloop call starts from
         # the same baseline. If the loop exited because the interpreter
         # was destroyed (no quit bump), don't underflow.
-        if _emx11_quit_count[0] > target:
-            _emx11_quit_count[0] -= 1
-        js._emx11_set_mainloop_active(False)
-tkinter.Misc.mainloop = _emx11_misc_mainloop
+        if _em_x11_quit_count[0] > target:
+            _em_x11_quit_count[0] -= 1
+        js._em_x11_set_mainloop_active(False)
+tkinter.Misc.mainloop = _em_x11_misc_mainloop
 
-def _emx11_module_mainloop(n=0):
+def _em_x11_module_mainloop(n=0):
     root = tkinter._default_root
     if root is None:
         return None
-    return _emx11_misc_mainloop(root, n)
-tkinter.mainloop = _emx11_module_mainloop
+    return _em_x11_misc_mainloop(root, n)
+tkinter.mainloop = _em_x11_module_mainloop
 `);
 
   /* --- Stage: run the user's app ---
@@ -689,7 +689,7 @@ tkinter.mainloop = _emx11_module_mainloop
    */
   py.runPython(`
 import js as _js
-def _emx11_drain(max_n=256):
+def _em_x11_drain(max_n=256):
     root = tkinter._default_root
     if root is None:
         return 0
@@ -701,7 +701,7 @@ def _emx11_drain(max_n=256):
         n += 1
     return n
 `);
-  const drain = py.runPython(`_emx11_drain`) as (max: number) => number;
+  const drain = py.runPython(`_em_x11_drain`) as (max: number) => number;
   drainRef = drain;
 
   /* --- Stage: settle ---
@@ -725,10 +725,10 @@ def _emx11_drain(max_n=256):
   /* --- Stage: hand off to event-driven pump ---
    *
    * From here on, the pump only runs when something signals it:
-   *   - libemx11 notifier setTimerProc -> onTimer(ms) -> scheduled wake
+   *   - libem_x11 notifier setTimerProc -> onTimer(ms) -> scheduled wake
    *     at exactly the Tcl deadline (cursor blink, animation frame,
    *     after-callback). Mirrors a real X client's select() timeout.
-   *   - libemx11 notifier alertNotifierProc -> onAlert -> immediate wake.
+   *   - libem_x11 notifier alertNotifierProc -> onAlert -> immediate wake.
    *   - main-thread input messages -> wakePump() -> immediate wake.
    *
    * If none of those fire, the worker is idle: no setTimeout pending,

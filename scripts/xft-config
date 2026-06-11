@@ -6,18 +6,18 @@
 # upstream install, which we don't ship; this stub feeds the probe the
 # em-x11 paths so configure picks up our X11/Xft/Xft.h and fontconfig.h.
 # Xft/Fc symbols stay unresolved in libtk8.6.a and are filled at the
-# side-module link / Pyodide load step by libemx11.so.
+# side-module link / Pyodide load step by libemX11.so.
 #
-# EMX11_INCLUDES / EMX11_LIBDIR are exported by the parent Makefile.
+# EM_X11_INCLUDES / EM_X11_LIBDIR are exported by the parent Makefile.
 
 set -e
 
 case "$1" in
     --cflags)
-        printf -- '-I%s\n' "${EMX11_INCLUDES:?EMX11_INCLUDES not set}"
+        printf -- '-I%s\n' "${EM_X11_INCLUDES:?EM_X11_INCLUDES not set}"
         ;;
     --libs)
-        printf -- '-L%s -lemx11\n' "${EMX11_LIBDIR:?EMX11_LIBDIR not set}"
+        printf -- '-L%s -lemX11\n' "${EM_X11_LIBDIR:?EM_X11_LIBDIR not set}"
         ;;
     --version)
         echo "2.3.13"

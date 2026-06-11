@@ -120,8 +120,8 @@ export type ImeControlMessage =
 
 /** main → worker: pre-fetched clipboard bytes ahead of a Ctrl+V /
  *  Shift+Insert keydown or a document `paste` event. Worker stores them
- *  in `globalThis.__emx11ClipboardBytes` so libemx11's synchronous
- *  emx11_js_clipboard_read_{begin,fetch} bridges find data when Tk
+ *  in `globalThis.__emX11ClipboardBytes` so libem_x11's synchronous
+ *  em_x11_js_clipboard_read_{begin,fetch} bridges find data when Tk
  *  asks. See em-x11/src/host/devices.ts for the main-thread analogue
  *  in DOM mode. */
 export interface ClipboardStageMessage {
