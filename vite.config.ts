@@ -3,40 +3,40 @@ import type { Plugin, ResolvedServerUrls } from 'vite';
 import { resolve } from 'node:path';
 import { readdirSync, statSync, existsSync } from 'node:fs';
 
-// pyodide-tk web demos. Mirrors em-x11's structure: each demos/<name>/
+// pyodide-tk web examples. Mirrors em-x11's structure: each examples/<name>/
 // is a single index.html with the Python in an inline
 // `<script type="text/python">` and a one-liner that hands it to the
 // shared harness in src/demo-harness.ts. The shared worker, harness,
 // and worker-protocol live under src/.
 
-function listDemoEntries(): { name: string; path: string }[] {
-  const demosDir = resolve(__dirname, 'demos');
-  if (!existsSync(demosDir)) return [];
-  return readdirSync(demosDir)
+function listExampleEntries(): { name: string; path: string }[] {
+  const examplesDir = resolve(__dirname, 'examples');
+  if (!existsSync(examplesDir)) return [];
+  return readdirSync(examplesDir)
     .filter((name) => {
-      const entry = resolve(demosDir, name, 'index.html');
-      return statSync(resolve(demosDir, name)).isDirectory() && existsSync(entry);
+      const entry = resolve(examplesDir, name, 'index.html');
+      return statSync(resolve(examplesDir, name)).isDirectory() && existsSync(entry);
     })
-    .map((name) => ({ name, path: `/demos/${name}/` }));
+    .map((name) => ({ name, path: `/examples/${name}/` }));
 }
 
-function printDemoUrls(): Plugin {
-  const demos = listDemoEntries();
+function printExampleUrls(): Plugin {
+  const examples = listExampleEntries();
   return {
-    name: 'pyodide-tk-print-demo-urls',
+    name: 'pyodide-tk-print-example-urls',
     configureServer(server) {
       const originalPrint = server.printUrls.bind(server);
       server.printUrls = () => {
         originalPrint();
-        if (demos.length === 0) return;
+        if (examples.length === 0) return;
         const urls: ResolvedServerUrls | null = server.resolvedUrls;
         const bases = urls ? [...urls.local, ...urls.network] : [];
         const base = bases[0]?.replace(/\/$/, '') ?? '';
         // eslint-disable-next-line no-console
-        console.log('\n  \x1b[1mDemos\x1b[0m:');
-        for (const d of demos) {
+        console.log('\n  \x1b[1mExamples\x1b[0m:');
+        for (const ex of examples) {
           // eslint-disable-next-line no-console
-          console.log(`    \x1b[36m${d.name.padEnd(14)}\x1b[0m ${base}${d.path}`);
+          console.log(`    \x1b[36m${ex.name.padEnd(14)}\x1b[0m ${base}${ex.path}`);
         }
         // eslint-disable-next-line no-console
         console.log('');
@@ -49,7 +49,7 @@ export default defineConfig({
   root: '.',
   publicDir: 'public',
 
-  plugins: [printDemoUrls()],
+  plugins: [printExampleUrls()],
 
   resolve: {
     alias: {
@@ -78,7 +78,7 @@ export default defineConfig({
   },
 
   build: {
-    // Top-level await in worker / demos; needs a target that supports it.
+    // Top-level await in worker / examples; needs a target that supports it.
     target: 'esnext',
     outDir: 'dist',
     emptyOutDir: true,
@@ -86,8 +86,8 @@ export default defineConfig({
       input: Object.fromEntries(
         [
           ['main', resolve(__dirname, 'index.html')],
-          ...listDemoEntries().map(
-            (d) => [d.name, resolve(__dirname, `demos/${d.name}/index.html`)],
+          ...listExampleEntries().map(
+            (ex) => [ex.name, resolve(__dirname, `examples/${ex.name}/index.html`)],
           ),
         ],
       ),

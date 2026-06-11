@@ -4,6 +4,9 @@ node_modules/
 .pnpm-debug.log*
 npm-debug.log*
 
+# Third-party source (fetched during postinstall)
+/ignored-area/
+
 # Build outputs
 build/
 dist/

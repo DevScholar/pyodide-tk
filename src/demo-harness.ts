@@ -1,11 +1,11 @@
 /**
- * pyodide-tk demo harness.
+ * pyodide-tk example harness.
  *
- * Each demo under demos/<name>/ does basically the same thing: stand up
+ * Each example under examples/<name>/ does basically the same thing: stand up
  * a canvas + log, spawn the worker, transfer OffscreenCanvas, relay
- * mouse + keyboard. The only thing that changes between demos is the
+ * mouse + keyboard. The only thing that changes between examples is the
  * Python source. So we extract the wiring into runDemo() and let each
- * demo's main.ts shrink to a one-liner.
+ * example's boot.ts shrink to a one-liner.
  *
  * runDemo returns a `DemoHandle` with a `stop()` method. Vite HMR and
  * SPA navigation should call it to terminate the worker and detach the
@@ -39,7 +39,7 @@ export interface DemoHandle {
   /** Terminate the worker and detach all main-thread listeners. Safe to
    *  call more than once. */
   stop(): void;
-  /** Underlying worker, exposed for advanced demos that want to post
+  /** Underlying worker, exposed for advanced examples that want to post
    *  custom messages. Do not use to add listeners -- they won't be
    *  cleaned up by stop(). */
   worker: Worker;
@@ -191,7 +191,7 @@ export function runDemo(opts: RunDemoOptions): DemoHandle {
      * default English. preventDefault keeps the textarea focused so
      * the second click on the same Tk Entry/Text widget preserves IME
      * state. Otherwise focus the canvas as before so plain key routing
-     * works for non-text demos. */
+     * works for non-text examples. */
     if (document.activeElement instanceof HTMLTextAreaElement) {
       e.preventDefault();
     } else {

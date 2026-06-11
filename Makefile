@@ -32,6 +32,10 @@ CPYTHON_VERSION   ?= 3.14.2
 CPYTHON_TARBALL    = cpython-v$(CPYTHON_VERSION).tar.gz
 CPYTHON_URL        = https://www.python.org/ftp/python/$(CPYTHON_VERSION)/Python-$(CPYTHON_VERSION).tgz
 
+IGNORED    = $(CURDIR)/ignored-area
+THIRDPARTY = $(IGNORED)/third-party
+TARBALLS   = $(IGNORED)/tarballs
+
 BUILD   = $(CURDIR)/build
 PREFIX  = $(BUILD)/install
 LIBDIR  = $(PREFIX)/lib
@@ -82,20 +86,20 @@ toolcheck:
 
 # ---- Tcl ---------------------------------------------------------------
 
-$(BUILD)/$(TCL_TARBALL):
-	mkdir -p $(BUILD)
-	cd $(BUILD) && wget -nc $(TCL_URL)
+$(TARBALLS)/$(TCL_TARBALL):
+	mkdir -p $(TARBALLS)
+	cd $(TARBALLS) && wget -nc $(TCL_URL)
 
-$(BUILD)/tcl/unix/configure: $(BUILD)/$(TCL_TARBALL)
-	rm -rf $(BUILD)/tcl
-	mkdir -p $(BUILD)/tcl
-	tar -C $(BUILD)/tcl --strip-components=1 -xf $(BUILD)/$(TCL_TARBALL)
-	cd $(BUILD)/tcl/unix && autoconf
+$(THIRDPARTY)/tcl/unix/configure: $(TARBALLS)/$(TCL_TARBALL)
+	rm -rf $(THIRDPARTY)/tcl
+	mkdir -p $(THIRDPARTY)/tcl
+	tar -C $(THIRDPARTY)/tcl --strip-components=1 -xf $(TARBALLS)/$(TCL_TARBALL)
+	cd $(THIRDPARTY)/tcl/unix && autoconf
 
-tclprep: $(BUILD)/tcl/unix/configure
+tclprep: $(THIRDPARTY)/tcl/unix/configure
 
-$(BUILD)/tcl/unix/Makefile: $(BUILD)/tcl/unix/configure
-	cd $(BUILD)/tcl/unix && emconfigure ./configure \
+$(THIRDPARTY)/tcl/unix/Makefile: $(THIRDPARTY)/tcl/unix/configure
+	cd $(THIRDPARTY)/tcl/unix && emconfigure ./configure \
 		--host=wasm32-unknown-emscripten \
 		--prefix=$(PREFIX) \
 		--disable-threads --disable-load --disable-shared \
@@ -104,20 +108,20 @@ $(BUILD)/tcl/unix/Makefile: $(BUILD)/tcl/unix/configure
 		tcl_cv_strtoul_unbroken=ok \
 		tcl_cv_strstr_unbroken=ok \
 		CFLAGS="$(CFLAGS_X)" LDFLAGS="$(LDFLAGS_X)"
-	cd $(BUILD)/tcl/unix && sed -i 's/-O2//g' Makefile
+	cd $(THIRDPARTY)/tcl/unix && sed -i 's/-O2//g' Makefile
 
-$(BUILD)/tcl/unix/libtcl8.6.a: $(BUILD)/tcl/unix/Makefile
-	cd $(BUILD)/tcl/unix && emmake make -j libtcl8.6.a libtclstub8.6.a
+$(THIRDPARTY)/tcl/unix/libtcl8.6.a: $(THIRDPARTY)/tcl/unix/Makefile
+	cd $(THIRDPARTY)/tcl/unix && emmake make -j libtcl8.6.a libtclstub8.6.a
 
 # Install the static archive + headers into PREFIX so Tk's configure
 # can find them via --with-tcl=$(LIBDIR).
-$(LIBDIR)/libtcl8.6.a: $(BUILD)/tcl/unix/libtcl8.6.a
+$(LIBDIR)/libtcl8.6.a: $(THIRDPARTY)/tcl/unix/libtcl8.6.a
 	mkdir -p $(LIBDIR) $(INCDIR)
-	cp $(BUILD)/tcl/unix/libtcl8.6.a $(BUILD)/tcl/unix/libtclstub8.6.a $(LIBDIR)/
-	cp $(BUILD)/tcl/unix/tclConfig.sh $(LIBDIR)/
-	cp $(BUILD)/tcl/generic/tcl.h $(BUILD)/tcl/generic/tclDecls.h \
-	   $(BUILD)/tcl/generic/tclPlatDecls.h $(BUILD)/tcl/generic/tclTomMath.h \
-	   $(BUILD)/tcl/generic/tclTomMathDecls.h $(INCDIR)/
+	cp $(THIRDPARTY)/tcl/unix/libtcl8.6.a $(THIRDPARTY)/tcl/unix/libtclstub8.6.a $(LIBDIR)/
+	cp $(THIRDPARTY)/tcl/unix/tclConfig.sh $(LIBDIR)/
+	cp $(THIRDPARTY)/tcl/generic/tcl.h $(THIRDPARTY)/tcl/generic/tclDecls.h \
+	   $(THIRDPARTY)/tcl/generic/tclPlatDecls.h $(THIRDPARTY)/tcl/generic/tclTomMath.h \
+	   $(THIRDPARTY)/tcl/generic/tclTomMathDecls.h $(INCDIR)/
 
 # Relink the static archive into a Pyodide-style side module.
 # --whole-archive forces all object files in to keep public symbols.
@@ -132,21 +136,21 @@ $(LIBDIR)/libtcl8.6.so: $(LIBDIR)/libtcl8.6.a
 # libem_x11 (or as undefined symbols satisfied by the host JS bridge).
 # Disable optional deps tcldide also disables for the first cut.
 
-$(BUILD)/$(TK_TARBALL):
-	mkdir -p $(BUILD)
-	cd $(BUILD) && wget -nc $(TK_URL)
+$(TARBALLS)/$(TK_TARBALL):
+	mkdir -p $(TARBALLS)
+	cd $(TARBALLS) && wget -nc $(TK_URL)
 
-$(BUILD)/tk/unix/configure: $(BUILD)/$(TK_TARBALL)
-	rm -rf $(BUILD)/tk
-	mkdir -p $(BUILD)/tk
-	tar -C $(BUILD)/tk --strip-components=1 -xf $(BUILD)/$(TK_TARBALL)
-	cd $(BUILD)/tk/unix && autoconf
+$(THIRDPARTY)/tk/unix/configure: $(TARBALLS)/$(TK_TARBALL)
+	rm -rf $(THIRDPARTY)/tk
+	mkdir -p $(THIRDPARTY)/tk
+	tar -C $(THIRDPARTY)/tk --strip-components=1 -xf $(TARBALLS)/$(TK_TARBALL)
+	cd $(THIRDPARTY)/tk/unix && autoconf
 
-tkprep: $(BUILD)/tk/unix/configure
+tkprep: $(THIRDPARTY)/tk/unix/configure
 
-$(BUILD)/tk/unix/Makefile: $(BUILD)/tk/unix/configure $(LIBDIR)/libtcl8.6.a
+$(THIRDPARTY)/tk/unix/Makefile: $(THIRDPARTY)/tk/unix/configure $(LIBDIR)/libtcl8.6.a
 	chmod +x $(CURDIR)/scripts/xft-config 2>/dev/null || true
-	cd $(BUILD)/tk/unix && \
+	cd $(THIRDPARTY)/tk/unix && \
 		PATH="$(CURDIR)/scripts:$$PATH" \
 		EM_X11_INCLUDES="$(EM_X11_INCLUDES)" \
 		EM_X11_LIBDIR="$(LIBDIR)" \
@@ -166,20 +170,20 @@ $(BUILD)/tk/unix/Makefile: $(BUILD)/tk/unix/configure $(LIBDIR)/libtcl8.6.a
 		--disable-xss \
 		CFLAGS="$(CFLAGS_X)" LDFLAGS="$(LDFLAGS_X)"
 	# Force our flags + header order over what configure's probe inserts.
-	cd $(BUILD)/tk/unix && sed -i 's/-O2//g' Makefile
-	cd $(BUILD)/tk/unix && sed -i 's|^X11_INCLUDES[[:space:]]*=.*|X11_INCLUDES = -I$(EM_X11_INCLUDES)|' Makefile
+	cd $(THIRDPARTY)/tk/unix && sed -i 's/-O2//g' Makefile
+	cd $(THIRDPARTY)/tk/unix && sed -i 's|^X11_INCLUDES[[:space:]]*=.*|X11_INCLUDES = -I$(EM_X11_INCLUDES)|' Makefile
 
-$(BUILD)/tk/unix/libtk8.6.a: $(BUILD)/tk/unix/Makefile
-	cd $(BUILD)/tk/unix && emmake make -j libtk8.6.a libtkstub8.6.a
+$(THIRDPARTY)/tk/unix/libtk8.6.a: $(THIRDPARTY)/tk/unix/Makefile
+	cd $(THIRDPARTY)/tk/unix && emmake make -j libtk8.6.a libtkstub8.6.a
 
 # Side-module relink for Tk. Tk references many Xlib symbols from
 # em-x11; we pass them as undefined for now (the .so link step will
 # resolve them at the next layer). --no-whole-archive on libtcl avoids
 # duplicating its objects (libtcl-so already exports them).
-$(LIBDIR)/libtk8.6.so: $(BUILD)/tk/unix/libtk8.6.a
+$(LIBDIR)/libtk8.6.so: $(THIRDPARTY)/tk/unix/libtk8.6.a
 	mkdir -p $(LIBDIR) $(INCDIR)/tk
-	cp $(BUILD)/tk/unix/libtk8.6.a $(BUILD)/tk/unix/libtkstub8.6.a $(LIBDIR)/
-	cp $(BUILD)/tk/generic/*.h $(INCDIR)/tk/
+	cp $(THIRDPARTY)/tk/unix/libtk8.6.a $(THIRDPARTY)/tk/unix/libtkstub8.6.a $(LIBDIR)/
+	cp $(THIRDPARTY)/tk/generic/*.h $(INCDIR)/tk/
 	emcc $(SIDE_LDFLAGS) -o $(LIBDIR)/libtk8.6.so \
 		-Wl,--whole-archive $(LIBDIR)/libtk8.6.a -Wl,--no-whole-archive \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
@@ -301,17 +305,18 @@ $(LIBDIR)/.em-x11-side-modules.stamp: $(LIBDIR)/libX11.so $(LIBDIR)/libXext.so $
 # which guarantees they're built with the same Emscripten ABI Pyodide
 # itself uses at runtime.
 
-CPYTHON_SRC = $(BUILD)/cpython-src
+CPYTHON_SRC = $(THIRDPARTY)/cpython
 
-$(CPYTHON_SRC)/$(CPYTHON_TARBALL):
-	mkdir -p $(CPYTHON_SRC)
-	cd $(CPYTHON_SRC) && wget -nc -O $(CPYTHON_TARBALL) $(CPYTHON_URL)
+$(TARBALLS)/$(CPYTHON_TARBALL):
+	mkdir -p $(TARBALLS)
+	cd $(TARBALLS) && wget -nc -O $(CPYTHON_TARBALL) $(CPYTHON_URL)
 
-$(CPYTHON_SRC)/_tkinter.c: $(CPYTHON_SRC)/$(CPYTHON_TARBALL)
+$(CPYTHON_SRC)/_tkinter.c: $(TARBALLS)/$(CPYTHON_TARBALL)
 	# Extract just what we need: Modules/_tkinter.c + Modules/tkappinit.c
 	# + the Include/ tree (ABI must match xbuildenv's Python.h, but we
 	# also need a few private headers under Include/internal/).
-	cd $(CPYTHON_SRC) && tar -xf $(CPYTHON_TARBALL) \
+	mkdir -p $(CPYTHON_SRC)
+	cd $(CPYTHON_SRC) && tar -xf $(TARBALLS)/$(CPYTHON_TARBALL) \
 		Python-$(CPYTHON_VERSION)/Modules/_tkinter.c \
 		Python-$(CPYTHON_VERSION)/Modules/tkinter.h \
 		Python-$(CPYTHON_VERSION)/Modules/tkappinit.c \

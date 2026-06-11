@@ -20,6 +20,6 @@
       "@emX11/*": ["../em-x11/src/*"]
     }
   },
-  "include": ["src/**/*.ts", "demos/**/*.ts", "vite.config.ts"],
-  "exclude": ["node_modules", "public", "build", "tests"]
+  "include": ["src/**/*.ts", "examples/**/*.ts", "vite.config.ts"],
+  "exclude": ["node_modules", "public", "build", "tests", "ignored-area"]
 }

@@ -19,7 +19,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "smoke:node": "node tests/node-load/smoke.mjs",
-    "stage-assets": "bash scripts/stage-assets.sh"
+    "stage-assets": "bash scripts/stage-assets.sh",
+    "clean:all": "rimraf build dist node_modules ignored-area"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

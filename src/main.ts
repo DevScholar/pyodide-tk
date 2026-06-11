@@ -1,9 +1,9 @@
 /**
- * Landing page for the pyodide-tk dev server. Lists available demos.
- * Real application UX is per-demo under demos/<name>/.
+ * Landing page for the pyodide-tk dev server. Lists available examples.
+ * Real application UX is per-example under examples/<name>/.
  */
 
-const demos = [
+const examples = [
   { name: 'tk-hello', description: 'Minimal Tk: Label + Button with -command callback' },
   { name: 'turtle-hello', description: 'Stdlib turtle graphics on a Tk Canvas' },
   { name: 'widget-gallery', description: 'Tk widget gallery: buttons, text, selection, containers, canvas' },
@@ -12,7 +12,7 @@ const demos = [
 const root = document.getElementById('app');
 if (root) {
   const title = document.createElement('h1');
-  title.textContent = 'pyodide-tk demos';
+  title.textContent = 'pyodide-tk examples';
   root.appendChild(title);
 
   const intro = document.createElement('p');
@@ -21,11 +21,11 @@ if (root) {
   root.appendChild(intro);
 
   const list = document.createElement('ul');
-  for (const demo of demos) {
+  for (const ex of examples) {
     const li = document.createElement('li');
     const a = document.createElement('a');
-    a.href = `/demos/${demo.name}/`;
-    a.textContent = `${demo.name} — ${demo.description}`;
+    a.href = `/examples/${ex.name}/`;
+    a.textContent = `${ex.name} — ${ex.description}`;
     li.appendChild(a);
     list.appendChild(li);
   }

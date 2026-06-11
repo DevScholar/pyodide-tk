@@ -556,7 +556,7 @@ tkinter.Tcl().eval('encoding system utf-8')
 
 # tcldide bridge: ::tcldide::dom and ::tcldide::jscall Tcl commands. The .so is
 # loaded globally above; bind Tcldide_Init via ctypes and call it on every
-# Tk root immediately after construction so demos can use the commands
+# Tk root immediately after construction so examples can use the commands
 # without any setup boilerplate. If libtcldide wasn't shipped (sibling
 # tcldide not built), the CDLL load fails and we leave Tk.__init__
 # alone -- standard tkinter still works, ::tcldide::* just isn't there.

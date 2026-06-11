@@ -9,7 +9,7 @@ LIB=build/install/lib
 TKD=build/_tkinter
 PUB=public/pyodide-tk-assets
 PYNM=node_modules/pyodide
-CPYLIB=build/cpython-src/cpython-3.14.2/Lib
+CPYLIB=ignored-area/third-party/cpython/cpython-3.14.2/Lib
 
 # --- Pre-flight: every input the script depends on must exist before we
 # start copying. On a clean checkout the previous behaviour was to abort
@@ -21,7 +21,7 @@ for f in \
     "$LIB/libX11.so" "$LIB/libXext.so" "$LIB/libXrender.so" "$LIB/libfontconfig.so" "$LIB/libXft.so" \
     "$TKD/_tkinter.so" \
     "$CPYLIB/turtle.py" \
-    "build/tcl/library" "build/tk/library" "$CPYLIB/tkinter"
+    "ignored-area/third-party/tcl/library" "ignored-area/third-party/tk/library" "$CPYLIB/tkinter"
 do
     [[ -e "$f" ]] || missing+=("$f")
 done
@@ -90,8 +90,8 @@ pack_tree() {
     echo "  $(wc -c < "$tar") bytes in $tar"
 }
 
-pack_tree build/tcl/library "$PUB/tcl-library.tar"
-pack_tree build/tk/library  "$PUB/tk-library.tar"
+pack_tree ignored-area/third-party/tcl/library "$PUB/tcl-library.tar"
+pack_tree ignored-area/third-party/tk/library  "$PUB/tk-library.tar"
 pack_tree "$CPYLIB/tkinter" "$PUB/tkinter.tar"
 
 # turtle.py is a single-file stdlib module that imports tkinter. Pyodide
