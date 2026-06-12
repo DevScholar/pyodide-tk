@@ -38,6 +38,14 @@ pnpm build
 pnpm dev
 ```
 
+# Known Issues
+
+These are known issues that remain unresolved despite repeated attempts.
+
+- In EmX11, running both TWM and Tcldide simultaneously causes the web page to freeze.
+
+- When attempting to open any dialog box in Common Dialogs, the web page freezes.
+
 # License
 
 MIT (see [LICENSE.md](LICENSE.md)).
