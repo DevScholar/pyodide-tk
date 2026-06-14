@@ -6,6 +6,34 @@ root = tk.Tk()
 root.title("Tk Widget Gallery")
 root.geometry("740x560")
 
+# --- Menu bar ---
+menubar = tk.Menu(root)
+root.configure(menu=menubar)
+
+file_menu = tk.Menu(menubar, tearoff=0)
+menubar.add_cascade(label="File", menu=file_menu)
+file_menu.add_command(label="New", command=lambda: print("File > New"))
+file_menu.add_command(label="Open...", command=lambda: print("File > Open..."))
+file_menu.add_separator()
+file_menu.add_command(label="Quit", command=root.destroy)
+
+view_menu = tk.Menu(menubar, tearoff=0)
+menubar.add_cascade(label="View", menu=view_menu)
+curtab = tk.IntVar(value=0)
+view_menu.add_radiobutton(label="Buttons", variable=curtab, value=0, command=lambda: nb.select(0))
+view_menu.add_radiobutton(label="Text & Entry", variable=curtab, value=1, command=lambda: nb.select(1))
+view_menu.add_radiobutton(label="Selection", variable=curtab, value=2, command=lambda: nb.select(2))
+view_menu.add_radiobutton(label="Containers", variable=curtab, value=3, command=lambda: nb.select(3))
+view_menu.add_radiobutton(label="Canvas", variable=curtab, value=4, command=lambda: nb.select(4))
+view_menu.add_radiobutton(label="Common Dialogs", variable=curtab, value=5, command=lambda: nb.select(5))
+
+help_menu = tk.Menu(menubar, tearoff=0)
+menubar.add_cascade(label="Help", menu=help_menu)
+help_menu.add_command(label="About...", command=lambda: messagebox.showinfo(
+    "About Widget Gallery",
+    f"Tk Widget Gallery\n\nA showcase of Tk widgets running under pyodide-tk.\n\nTk {tk.TkVersion:.1f}"
+))
+
 # --- Main notebook ---
 nb = ttk.Notebook(root)
 nb.pack(fill="both", expand=1, padx=8, pady=(8, 0))
