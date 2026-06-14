@@ -91,12 +91,20 @@ export function runDemo(opts: RunDemoOptions): DemoHandle {
    * Main owns a hidden <textarea>; the worker posts setFocus/setSpot/
    * positionHint over and we apply them here. Composed / pasted text
    * goes the other way as a `textKey` message the worker forwards to
-   * emX11.display.inject.textKey. */
+   * emX11.display.inject.textKey.
+   *
+   * Preedit callbacks: compositionstart/update/end from the textarea
+   * are forwarded to the worker so Tk's inline-preedit callbacks
+   * (XIMPreeditCallbacks style) render composing text at the caret. */
   const ime = createDomTextInputBridge({
     canvas,
     rootWidth: canvas.width,
     rootHeight: canvas.height,
     onText: (text) => send({ type: 'textKey', text }),
+    onPreeditStart: () => send({ type: 'imePreeditStart' }),
+    onPreeditDraw: (text, caret, chgFirst, chgLength) =>
+      send({ type: 'imePreeditDraw', text, caret, chgFirst, chgLength }),
+    onPreeditDone: () => send({ type: 'imePreeditDone' }),
   });
 
   worker.addEventListener('message', (ev: MessageEvent<WorkerOutboundMessage>) => {

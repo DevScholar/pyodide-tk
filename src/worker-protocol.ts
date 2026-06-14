@@ -152,13 +152,40 @@ export interface CursorChangeMessage {
   css: string;
 }
 
+/* --- Preedit relay: main → worker ---
+ *
+ * compositionstart/update/end fire on the main-thread textarea owned by
+ * createDomTextInputBridge.  Main forwards them here so the worker can
+ * invoke Tk's inline-preedit callbacks (xim.c).  No `window` field:
+ * the worker tracks the current XIM-focused window from its own
+ * setFocus/clearFocus textInputRemote closures. */
+
+export interface ImePreeditStartMessage {
+  type: 'imePreeditStart';
+}
+export interface ImePreeditDrawMessage {
+  type: 'imePreeditDraw';
+  text: string;
+  /** Cursor position within preedit string (UTF-16 code units from
+   *  textarea.selectionStart). */
+  caret: number;
+  chgFirst: number;
+  chgLength: number;
+}
+export interface ImePreeditDoneMessage {
+  type: 'imePreeditDone';
+}
+
 export type WorkerInboundMessage =
   | InitMessage
   | MouseRelay
   | KeyRelay
   | WheelRelay
   | TextKeyRelay
-  | ClipboardStageMessage;
+  | ClipboardStageMessage
+  | ImePreeditStartMessage
+  | ImePreeditDrawMessage
+  | ImePreeditDoneMessage;
 
 export interface LogMessage { type: 'log'; line: string; }
 export interface ReadyMessage { type: 'ready'; }

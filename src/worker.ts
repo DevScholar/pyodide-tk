@@ -42,6 +42,11 @@ function logToMain(line: string): void {
 let emX11: EmX11 | null = null;
 let booted = false;
 
+/** Track the XIM-focused window so preedit messages (which carry no window
+ *  field) can be routed to the correct InputBridge module. Updated by the
+ *  textInputRemote.setFocus/clearFocus closures below. */
+let imeFocusedWindow: number | null = null;
+
 ctx.addEventListener('message', (ev: MessageEvent<WorkerInboundMessage>) => {
   const msg = ev.data;
   switch (msg.type) {
@@ -69,6 +74,20 @@ ctx.addEventListener('message', (ev: MessageEvent<WorkerInboundMessage>) => {
       break;
     case 'clipboardStage':
       onClipboardStage(msg.bytes);
+      break;
+    case 'imePreeditStart':
+      if (emX11 && imeFocusedWindow !== null)
+        emX11._host.devices.pushPreeditStart(imeFocusedWindow);
+      break;
+    case 'imePreeditDraw':
+      if (emX11 && imeFocusedWindow !== null && msg.text) {
+        emX11._host.devices.pushPreeditDraw(
+          imeFocusedWindow, msg.text, msg.caret, msg.chgFirst, msg.chgLength);
+      }
+      break;
+    case 'imePreeditDone':
+      if (emX11 && imeFocusedWindow !== null)
+        emX11._host.devices.pushPreeditDone(imeFocusedWindow);
       break;
   }
 });
@@ -270,12 +289,24 @@ async function boot(
     width,
     height,
     textInputRemote: {
-      setFocus: (window) => post({ type: 'imeFocus', window }),
-      clearFocus: () => post({ type: 'imeClearFocus' }),
+      setFocus: (window) => {
+        imeFocusedWindow = window;
+        post({ type: 'imeFocus', window });
+      },
+      clearFocus: () => {
+        imeFocusedWindow = null;
+        post({ type: 'imeClearFocus' });
+      },
       setSpot: (window, spotX, spotY) =>
         post({ type: 'imeSpot', window, spotX, spotY }),
       positionHint: (absX, absY) =>
         post({ type: 'imePositionHint', absX, absY }),
+      /* Preedit methods exist for interface completeness: in worker mode
+       * preedit events flow main→worker through createDomTextInputBridge
+       * callbacks, not through this remote. These are no-ops. */
+      preeditStart: () => {},
+      preeditDraw: () => {},
+      preeditDone: () => {},
     },
   });
 
