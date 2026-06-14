@@ -18,6 +18,7 @@ CPYLIB=ignored-area/third-party/cpython/cpython-3.14.2/Lib
 missing=()
 for f in \
     "$LIB/libtcl8.6.so" "$LIB/libtk8.6.so" \
+    "$LIB/libem_x11_event_queue.so" \
     "$LIB/libX11.so" "$LIB/libXext.so" "$LIB/libXrender.so" "$LIB/libfontconfig.so" "$LIB/libXft.so" \
     "$TKD/_tkinter.so" \
     "$CPYLIB/turtle.py" \
@@ -57,6 +58,7 @@ fi
 # built. Distinguish "file absent" (skip with a friendly note) from
 # "cp failed for any other reason" (real error, propagate via set -e).
 cp -u "$LIB"/libtcl8.6.so "$LIB"/libtk8.6.so \
+    "$LIB"/libem_x11_event_queue.so \
     "$LIB"/libX11.so "$LIB"/libXext.so "$LIB"/libXrender.so "$LIB"/libfontconfig.so "$LIB"/libXft.so \
     "$PUB/lib/"
 if [[ -f "$LIB/libtcldide.so" ]]; then

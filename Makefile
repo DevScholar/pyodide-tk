@@ -238,6 +238,7 @@ $(EM_X11_STAMP): $(EM_X11_DIR)/native/CMakeLists.txt
 	$(MAKE) -C $(EM_X11_BUILD_DIR) -j
 	touch $@
 
+$(EM_X11_BUILD_DIR)/libem_x11_event_queue.a: $(EM_X11_STAMP)
 $(EM_X11_BUILD_DIR)/libX11.a: $(EM_X11_STAMP)
 $(EM_X11_BUILD_DIR)/libXext.a: $(EM_X11_STAMP)
 $(EM_X11_BUILD_DIR)/libXrender.a: $(EM_X11_STAMP)
@@ -259,6 +260,7 @@ $(EM_X11_BUILD_DIR)/libXft.a: $(EM_X11_STAMP)
 # GLX is excluded — _tkinter doesn't use OpenGL.
 
 EM_X11_ARCHIVES = \
+	$(EM_X11_BUILD_DIR)/libem_x11_event_queue.a \
 	$(EM_X11_BUILD_DIR)/libX11.a \
 	$(EM_X11_BUILD_DIR)/libXext.a \
 	$(EM_X11_BUILD_DIR)/libXrender.a \
@@ -267,9 +269,14 @@ EM_X11_ARCHIVES = \
 
 EM_X11_RELINK = -Wl,--whole-archive $< -Wl,--no-whole-archive
 
-$(LIBDIR)/libX11.so: $(EM_X11_BUILD_DIR)/libX11.a $(LIBDIR)/libtcl8.6.so
+$(LIBDIR)/libem_x11_event_queue.so: $(EM_X11_BUILD_DIR)/libem_x11_event_queue.a
 	emcc $(WASMEH) -sSIDE_MODULE=1 $(OPT) -o $@ \
-		$(EM_X11_RELINK) $(LIBDIR)/libtcl8.6.so \
+		$(EM_X11_RELINK) \
+		-sERROR_ON_UNDEFINED_SYMBOLS=0
+
+$(LIBDIR)/libX11.so: $(EM_X11_BUILD_DIR)/libX11.a $(LIBDIR)/libem_x11_event_queue.so
+	emcc $(WASMEH) -sSIDE_MODULE=1 $(OPT) -o $@ \
+		$(EM_X11_RELINK) $(LIBDIR)/libem_x11_event_queue.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
 $(LIBDIR)/libXext.so: $(EM_X11_BUILD_DIR)/libXext.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so
@@ -294,7 +301,7 @@ $(LIBDIR)/libXft.so: $(EM_X11_BUILD_DIR)/libXft.a $(LIBDIR)/libX11.so $(LIBDIR)/
 
 EM_X11_SIDE_MODULES_COPY = $(LIBDIR)/.em-x11-side-modules.stamp
 
-$(LIBDIR)/.em-x11-side-modules.stamp: $(LIBDIR)/libX11.so $(LIBDIR)/libXext.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so $(LIBDIR)/libXft.so
+$(LIBDIR)/.em-x11-side-modules.stamp: $(LIBDIR)/libem_x11_event_queue.so $(LIBDIR)/libX11.so $(LIBDIR)/libXext.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so $(LIBDIR)/libXft.so
 	touch $@
 
 # ---- CPython source + _tkinter.so --------------------------------------
@@ -382,3 +389,30 @@ $(LIBDIR)/libtcldide.so: $(TCLDIDE_SRC) $(LIBDIR)/libtcl8.6.so
 		$(TCLDIDE_SRC) $(LIBDIR)/libtcl8.6.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0 \
 		-o $(LIBDIR)/libtcldide.so
+
+# ---- libtcldide_notifier.so -----------------------------------------------
+# Browser-friendly Tcl notifier, moved from em-x11 to tcldide (the Tcl
+# integration owner).  Replaces Tcl's default Unix notifier via
+# Tcl_SetNotifier so the JS event loop drives Tk rather than a blocking
+# select().  Built as a side module so Pyodide can dlopen it.
+#
+# Depends on:
+#   Tcl_SetNotifier               → libtcl8.6.so (global:true)
+#   em_x11_deliver_pending_signals → libX11.so    (global:true)
+#   Module['emX11Host']           → set by pyodide-tk before dlopen
+#
+# Source lives in sibling tcldide/ (single source of truth, no copy).
+
+TCLDIDE_NOTIFIER_SRC = $(CURDIR)/../tcldide/runtime/notifier.c
+
+$(LIBDIR)/libtcldide_notifier.so: $(TCLDIDE_NOTIFIER_SRC) $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libX11.so
+	@test -f $(TCLDIDE_NOTIFIER_SRC) || \
+		(echo "tcldide notifier source missing at $(TCLDIDE_NOTIFIER_SRC)"; exit 1)
+	mkdir -p $(LIBDIR)
+	emcc $(WASMEH) $(SIDE_CC) -sSIDE_MODULE=1 \
+		-I $(INCDIR) \
+		-I $(EM_X11_INCLUDES) \
+		$(TCLDIDE_NOTIFIER_SRC) \
+		$(LIBDIR)/libtcl8.6.so $(LIBDIR)/libX11.so \
+		-sERROR_ON_UNDEFINED_SYMBOLS=0 \
+		-o $(LIBDIR)/libtcldide_notifier.so
