@@ -52,7 +52,10 @@ WASMEH    = -fwasm-exceptions -sSUPPORT_LONGJMP=wasm
 SIDE_CC   = -fPIC
 
 OPT      ?= -Oz
-CFLAGS_X  = $(OPT) $(WASMEH) $(SIDE_CC)
+# -Dselect/poll: Pyodide main-module _select/_poll cannot be overridden
+# by side-module exports.  Rename at compile time so Tcl calls resolve
+# to __wrap_select/__wrap_poll from libem_x11_event_queue.so instead.
+CFLAGS_X  = $(OPT) $(WASMEH) $(SIDE_CC) -Dselect=__wrap_select -Dpoll=__wrap_poll
 LDFLAGS_X = $(WASMEH)
 
 # Side-module link flags. =1 auto-exports all non-static symbols
@@ -62,11 +65,11 @@ SIDE_LDFLAGS = -sSIDE_MODULE=1 $(WASMEH)
 
 .PHONY: all tclprep tkprep tkinter clean distclean toolcheck smoke-tcl libtcl-so stage cpython-src
 
-all: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(EM_X11_SIDE_MODULES_COPY) $(LIBDIR)/libtcldide.so $(TKINTER_OUT)/_tkinter.so stage
+all: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(EM_X11_SIDE_MODULES_COPY) $(LIBDIR)/libtcldide.so $(LIBDIR)/libtcldide_notifier.so $(TKINTER_OUT)/_tkinter.so stage
 
 # Stage built artefacts into public/ so the vite dev server picks them up.
 # Folded into `all` so a fresh clone -> `make` -> `pnpm dev` just works.
-stage: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(EM_X11_SIDE_MODULES_COPY) $(LIBDIR)/libtcldide.so $(TKINTER_OUT)/_tkinter.so
+stage: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(EM_X11_SIDE_MODULES_COPY) $(LIBDIR)/libtcldide.so $(LIBDIR)/libtcldide_notifier.so $(TKINTER_OUT)/_tkinter.so
 	bash $(CURDIR)/scripts/stage-assets.sh
 
 # smoke-tcl needs an alias because the recipe doesn't reference the .so by path.
@@ -125,9 +128,13 @@ $(LIBDIR)/libtcl8.6.a: $(THIRDPARTY)/tcl/unix/libtcl8.6.a
 
 # Relink the static archive into a Pyodide-style side module.
 # --whole-archive forces all object files in to keep public symbols.
-$(LIBDIR)/libtcl8.6.so: $(LIBDIR)/libtcl8.6.a
-	emcc $(SIDE_LDFLAGS) -o $(LIBDIR)/libtcl8.6.so \
-		-Wl,--whole-archive $(LIBDIR)/libtcl8.6.a -Wl,--no-whole-archive
+# libem_x11_event_queue.so on the link line creates a NEEDED entry so
+# __wrap_select/__wrap_poll resolve from it (Pyodide loadDynlib ignores
+# {global:true}, so only NEEDED-chain visibility works).
+$(LIBDIR)/libtcl8.6.so: $(LIBDIR)/libtcl8.6.a $(LIBDIR)/libem_x11_event_queue.so
+	emcc $(SIDE_LDFLAGS) -o $@ \
+		-Wl,--whole-archive $(LIBDIR)/libtcl8.6.a -Wl,--no-whole-archive \
+		$(LIBDIR)/libem_x11_event_queue.so
 
 # ---- Tk ----------------------------------------------------------------
 # Stock Tk 8.6 against em-x11's Xlib. Same trick as tcldide: --with-x
@@ -180,12 +187,13 @@ $(THIRDPARTY)/tk/unix/libtk8.6.a: $(THIRDPARTY)/tk/unix/Makefile
 # em-x11; we pass them as undefined for now (the .so link step will
 # resolve them at the next layer). --no-whole-archive on libtcl avoids
 # duplicating its objects (libtcl-so already exports them).
-$(LIBDIR)/libtk8.6.so: $(THIRDPARTY)/tk/unix/libtk8.6.a
+$(LIBDIR)/libtk8.6.so: $(THIRDPARTY)/tk/unix/libtk8.6.a $(LIBDIR)/libem_x11_event_queue.so
 	mkdir -p $(LIBDIR) $(INCDIR)/tk
 	cp $(THIRDPARTY)/tk/unix/libtk8.6.a $(THIRDPARTY)/tk/unix/libtkstub8.6.a $(LIBDIR)/
 	cp $(THIRDPARTY)/tk/generic/*.h $(INCDIR)/tk/
 	emcc $(SIDE_LDFLAGS) -o $(LIBDIR)/libtk8.6.so \
 		-Wl,--whole-archive $(LIBDIR)/libtk8.6.a -Wl,--no-whole-archive \
+		$(LIBDIR)/libem_x11_event_queue.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
 clean:
@@ -405,7 +413,7 @@ $(LIBDIR)/libtcldide.so: $(TCLDIDE_SRC) $(LIBDIR)/libtcl8.6.so
 
 TCLDIDE_NOTIFIER_SRC = $(CURDIR)/../tcldide/runtime/notifier.c
 
-$(LIBDIR)/libtcldide_notifier.so: $(TCLDIDE_NOTIFIER_SRC) $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libX11.so
+$(LIBDIR)/libtcldide_notifier.so: $(TCLDIDE_NOTIFIER_SRC) $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libX11.so $(LIBDIR)/libem_x11_event_queue.so
 	@test -f $(TCLDIDE_NOTIFIER_SRC) || \
 		(echo "tcldide notifier source missing at $(TCLDIDE_NOTIFIER_SRC)"; exit 1)
 	mkdir -p $(LIBDIR)
@@ -413,6 +421,6 @@ $(LIBDIR)/libtcldide_notifier.so: $(TCLDIDE_NOTIFIER_SRC) $(LIBDIR)/libtcl8.6.so
 		-I $(INCDIR) \
 		-I $(EM_X11_INCLUDES) \
 		$(TCLDIDE_NOTIFIER_SRC) \
-		$(LIBDIR)/libtcl8.6.so $(LIBDIR)/libX11.so \
+		$(LIBDIR)/libtcl8.6.so $(LIBDIR)/libX11.so $(LIBDIR)/libem_x11_event_queue.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0 \
 		-o $(LIBDIR)/libtcldide_notifier.so
