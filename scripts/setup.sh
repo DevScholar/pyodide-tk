@@ -3,12 +3,13 @@
 #
 # Called automatically by `pnpm install` (postinstall hook), or can be run
 # manually after cloning. Downloads Tcl/Tk/CPython sources, builds side-module
-# .so files, and stages assets into public/.
+# .so files, bundles them into libs.tar + python.tar, gzips large assets,
+# and stages everything into public/.
 #
 # External dependencies — detected but NOT fetched. If missing the script
 # prints install instructions and exits; the user installs them and re-runs.
 #   - em-x11       sibling dir, cloned (archives auto-built by make)
-#   - xbuildenv    pyodide xbuildenv install 0.34.3
+#   - xbuildenv    see https://pyodide.org/en/stable/development/building-from-sources.html
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -78,9 +79,9 @@ if [ ! -f "$PYINC/Python.h" ]; then
     echo "  The xbuildenv provides Python.h from a wasm-EH CPython build,"
     echo "  which is required to compile _tkinter.so."
     echo ""
-    echo "  Install it with:"
-    echo "    pip install pyodide-build"
-    echo "    pyodide xbuildenv install 0.34.3"
+    echo "  Follow the Pyodide build-from-source guide to set up the"
+    echo "  development environment (including xbuildenv):"
+    echo "    https://pyodide.org/en/stable/development/building-from-sources.html"
     echo ""
     echo "  Or override PYINC:"
     echo "    PYINC=/path/to/python3.14/include make -j all"
