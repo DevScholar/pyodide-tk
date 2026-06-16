@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Stage all runtime assets into public/ for the vite dev server.
 # Idempotent — safe to re-run after rebuilding native artefacts.
+#
+# Bundling (HTTP/1.1 connection-limit mitigation):
+#   libs.tar   — all .so + tcl8.6/ + tk8.6/  (extract dir: /usr/lib)
+#   python.tar — _tkinter.so + turtle.py + tkinter/ (extract dir: site-packages)
+#
+# 14+ individual fetches → 2 tar fetches. gzip halves the wire size.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -11,10 +17,7 @@ PUB=public/pyodide-tk-assets
 PYNM=node_modules/pyodide
 CPYLIB=ignored-area/third-party/cpython/cpython-3.14.2/Lib
 
-# --- Pre-flight: every input the script depends on must exist before we
-# start copying. On a clean checkout the previous behaviour was to abort
-# mid-stage with `cp: cannot stat …` which gave no hint about what step
-# was missing. List everything we need and report all gaps at once.
+# --- Pre-flight: every input must exist ---
 missing=()
 for f in \
     "$LIB/libtcl8.6.so" "$LIB/libtk8.6.so" \
@@ -31,22 +34,15 @@ if (( ${#missing[@]} > 0 )); then
     {
         echo "stage-assets: missing required build artefacts:"
         for f in "${missing[@]}"; do echo "  - $f"; done
-        echo "Run 'make all && make tkinter' first (or fetch the cpython source via the Makefile)."
+        echo "Run 'make all && make tkinter' first."
     } >&2
     exit 1
 fi
 
 mkdir -p public/pyodide "$PUB/lib"
 
-# Pyodide runtime: copy from node_modules/pyodide. The package is pinned
-# in package.json (see "pyodide" devDependency); the copy keeps the dev
-# server self-contained instead of pointing vite at node_modules. The
-# guard is just a belt-and-braces no-op if someone's already populated
-# public/pyodide/ via another route (xbuildenv extract, manual stage).
+# --- Pyodide runtime ---
 if [[ -d $PYNM ]]; then
-    # Glob rather than brace-expand: future Pyodide releases may add or
-    # drop files (e.g. pyodide.d.ts is currently optional) without our
-    # `set -e` aborting on a missing fixed name.
     for f in "$PYNM"/pyodide.asm.mjs "$PYNM"/pyodide.asm.wasm \
              "$PYNM"/pyodide.mjs "$PYNM"/pyodide.js "$PYNM"/pyodide.d.ts \
              "$PYNM"/python_stdlib.zip "$PYNM"/pyodide-lock.json
@@ -55,9 +51,7 @@ if [[ -d $PYNM ]]; then
     done
 fi
 
-# Side modules. libtcldide is optional -- sibling tcldide might not be
-# built. Distinguish "file absent" (skip with a friendly note) from
-# "cp failed for any other reason" (real error, propagate via set -e).
+# --- Side modules: copy individually (kept for direct URL access / fallback) ---
 cp -u "$LIB"/libtcl8.6.so "$LIB"/libtk8.6.so \
     "$LIB"/libem_x11_event_queue.so \
     "$LIB"/libX11.so "$LIB"/libXext.so "$LIB"/libXrender.so "$LIB"/libfontconfig.so "$LIB"/libXft.so \
@@ -65,23 +59,11 @@ cp -u "$LIB"/libtcl8.6.so "$LIB"/libtk8.6.so \
     "$PUB/lib/"
 if [[ -f "$LIB/libtcldide.so" ]]; then
     cp -u "$LIB/libtcldide.so" "$PUB/lib/"
-else
-    echo "  (libtcldide.so missing -- ::tcldide::dom / ::tcldide::jscall unavailable)"
 fi
 cp -u "$TKD"/_tkinter.so "$PUB/lib/"
+cp -u "$CPYLIB/turtle.py" "$PUB/turtle.py"
 
-# Tcl + Tk script libraries: pack each tree as a single tarball. The
-# worker fetches one HTTP response and hands it to py.unpackArchive,
-# which extracts into MEMFS in C — orders of magnitude faster than
-# 1000+ per-file fetch + writeFile round-trips (~9s → <1s).
-#
-# Reproducibility flags:
-#   --sort=name         stable file order regardless of readdir() order
-#   --mtime=@0          zero mtime on every entry
-#   --owner=0 --group=0 strip local uid/gid
-#   --numeric-owner     don't embed /etc/passwd lookups
-# Without these the tarball hash drifts on every rebuild, which churns
-# the dev-server's HTTP ETag and any downstream content-addressed cache.
+# --- Tar bundling ---
 pack_tree() {
     local src=$1 tar=$2
     rm -f "$tar"
@@ -89,27 +71,39 @@ pack_tree() {
         --sort=name --mtime=@0 \
         --owner=0 --group=0 --numeric-owner \
         -C "$src" .
-    # wc -c rather than `stat -c%s` for portability (the BSD `stat` on
-    # macOS uses `-f%z`; wc is the same everywhere).
     echo "  $(wc -c < "$tar") bytes in $tar"
 }
 
+# libs.tar: .so files + tcl8.6/ + tk8.6/  → worker unpacks to /usr/lib/
+TMP_LIBS=$(mktemp -d)
+cleanup() { rm -rf "$TMP_LIBS" "$TMP_PY"; }
+TMP_PY=$(mktemp -d)
+trap cleanup EXIT
+for so in "$LIB"/*.so; do cp "$so" "$TMP_LIBS/"; done
+cp -r ignored-area/third-party/tcl/library "$TMP_LIBS/tcl8.6"
+cp -r ignored-area/third-party/tk/library  "$TMP_LIBS/tk8.6"
+pack_tree "$TMP_LIBS" "$PUB/libs.tar"
+
+# python.tar: _tkinter.so + turtle.py + tkinter/ → worker unpacks to site-packages/
+cp "$TKD/_tkinter.so" "$TMP_PY/"
+cp "$CPYLIB/turtle.py"   "$TMP_PY/"
+cp -r "$CPYLIB/tkinter"  "$TMP_PY/tkinter"
+pack_tree "$TMP_PY" "$PUB/python.tar"
+
+# Legacy content tars — kept so old worker.ts paths still work during transition.
 pack_tree ignored-area/third-party/tcl/library "$PUB/tcl-library.tar"
 pack_tree ignored-area/third-party/tk/library  "$PUB/tk-library.tar"
 pack_tree "$CPYLIB/tkinter" "$PUB/tkinter.tar"
 
-# turtle.py is a single-file stdlib module that imports tkinter. Pyodide
-# strips it from python_stdlib.zip (along with tkinter) since stock
-# Pyodide has no _tkinter.so. Stage it as a plain file -- the worker
-# writes it to site-packages alongside _tkinter.so.
-cp -u "$CPYLIB/turtle.py" "$PUB/turtle.py"
+# --- gzip pre-compression (vite middleware serves .gz when Accept-Encoding matches) ---
+for f in "$PUB"/*.tar public/pyodide/pyodide.asm.wasm public/pyodide/python_stdlib.zip; do
+    [[ -f "$f" ]] || continue
+    gzip -kf "$f"
+    echo "  gzipped: $(wc -c < "$f") → $(wc -c < "$f.gz") bytes ($f)"
+done
 
-# Drop any old per-file trees so the dev server doesn't keep serving
-# them (and so the build dir doesn't grow stale copies).
+# --- Cleanup stale ---
 rm -rf "$PUB/tcl-library" "$PUB/tk-library" "$PUB/tkinter"
-
-# Remove stale side modules that are no longer part of the split set.
-# libwacl.so was an early experiment and is no longer used.
 rm -f "$PUB/lib/libwacl.so"
 
 echo "stage-assets done."

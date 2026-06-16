@@ -201,25 +201,18 @@ async function boot(
 ): Promise<void> {
   /* --- Stage: parallel asset prefetch + pyodide.mjs import ---
    *
-   * Kick off ALL pyodide-tk asset downloads AND the pyodide.mjs import
-   * in one parallel group, before we await any of them. The HTTP layer
-   * fetches everything concurrently with Pyodide's own pyodide.asm.wasm
-   * (~9 MB) + python_stdlib.zip downloads (those start once we await
-   * loadPyodide below). Including the dynamic import in this group --
-   * rather than awaiting it after the fetches start -- lets the browser
-   * begin downloading pyodide.mjs alongside the assets instead of after
-   * the asset fetch() calls have all been issued. `<link rel="preload">`
-   * in index.html warms the connection earlier still; this turns the
-   * cache hit into actual parallel transfer.
+   * All pyodide-tk assets are bundled into two tarballs during staging
+   * (see scripts/stage-assets.sh):
+   *   libs.tar   — .so side modules + tcl8.6/ + tk8.6/ (extract to /usr/lib)
+   *   python.tar — _tkinter.so + turtle.py + tkinter/ (extract to site-packages)
+   *
+   * Two fetches instead of 14+ eliminates HTTP/1.1 connection queueing.
+   * They start alongside the pyodide.mjs import so the browser can
+   * download everything concurrently with Pyodide's own pyodide.asm.wasm
+   * (~9 MB) + python_stdlib.zip.
    */
   const fetchAB = (url: string): Promise<ArrayBuffer> =>
     fetch(url).then((r) => {
-      if (!r.ok) throw new Error(`fetch ${url}: ${r.status}`);
-      return r.arrayBuffer();
-    });
-  const fetchOptional = (url: string): Promise<ArrayBuffer | null> =>
-    fetch(url).then((r) => {
-      if (r.status === 404) return null;
       if (!r.ok) throw new Error(`fetch ${url}: ${r.status}`);
       return r.arrayBuffer();
     });
@@ -227,21 +220,9 @@ async function boot(
   const pyodideUrl = new URL('/pyodide/pyodide.mjs', ctx.location.origin).href;
   const indexURL = new URL('/pyodide/', ctx.location.origin).href;
   const pending = {
-    pyodide:   import(/* @vite-ignore */ pyodideUrl),
-    libtcl:    fetchAB(`${A}/lib/libtcl8.6.so`),
-    libtk:     fetchAB(`${A}/lib/libtk8.6.so`),
-    libEvQueue: fetchAB(`${A}/lib/libem_x11_event_queue.so`),
-    libX11:    fetchAB(`${A}/lib/libX11.so`),
-    libXft:    fetchAB(`${A}/lib/libXft.so`),
-    libXrender:fetchAB(`${A}/lib/libXrender.so`),
-    libfontconfig: fetchAB(`${A}/lib/libfontconfig.so`),
-    libtcldide:    fetchOptional(`${A}/lib/libtcldide.so`),
-    libNotifier:   fetchAB(`${A}/lib/libtcldide_notifier.so`),
-    tkinterSo: fetchAB(`${A}/lib/_tkinter.so`),
-    turtle:    fetchAB(`${A}/turtle.py`),
-    tclLib:    fetchAB(`${A}/tcl-library.tar`),
-    tkLib:     fetchAB(`${A}/tk-library.tar`),
-    tkinterTar:fetchAB(`${A}/tkinter.tar`),
+    pyodide:  import(/* @vite-ignore */ pyodideUrl),
+    libsTar:  fetchAB(`${A}/libs.tar`),
+    pythonTar:fetchAB(`${A}/python.tar`),
   };
 
   /* --- Stage: load Pyodide ---
@@ -345,50 +326,18 @@ async function boot(
 
   const pyi = pyodideInternals(py);
 
-  /* --- Stage: stage prefetched bytes into MEMFS ---
+  /* --- Stage: unpack bundled tarballs into MEMFS ---
    *
-   * .so files + turtle.py go via FS.writeFile; the tcl/tk/tkinter trees
-   * ship as one .tar each and are extracted via py.unpackArchive (in C,
-   * ~30x faster than 1000+ per-file FS.writeFile round-trips).
+   * libs.tar → /usr/lib/       (.so files + tcl8.6/ + tk8.6/)
+   * python.tar → /lib/python3.14/site-packages/  (_tkinter.so + turtle.py + tkinter/)
    *
-   * Wait for all asset arrivals together before issuing the writes; the
-   * write order itself is fixed, but the network fetches are independent.
+   * py.unpackArchive extracts in C, ~30x faster than per-file FS.writeFile.
    */
   py.FS.mkdirTree('/usr/lib');
   py.FS.mkdirTree('/lib/python3.14/site-packages');
-  const [
-    libtclBuf, libtkBuf, libEvQueueBuf, libX11Buf, libXftBuf, libXrenderBuf, libfontconfigBuf, libtcldideBuf, libNotifierBuf, tkinterSoBuf,
-    turtleBuf, tclLibBuf, tkLibBuf, tkinterTarBuf,
-  ] = await Promise.all([
-    pending.libtcl, pending.libtk, pending.libEvQueue, pending.libX11, pending.libXft, pending.libXrender, pending.libfontconfig,
-    pending.libtcldide, pending.libNotifier, pending.tkinterSo,
-    pending.turtle, pending.tclLib, pending.tkLib, pending.tkinterTar,
-  ]);
-  const writeFromBuf = (buf: ArrayBuffer, memPath: string): void => {
-    py.FS.writeFile(memPath, new Uint8Array(buf));
-  };
-  writeFromBuf(libtclBuf,       '/usr/lib/libtcl8.6.so');
-  writeFromBuf(libtkBuf,        '/usr/lib/libtk8.6.so');
-  writeFromBuf(libEvQueueBuf,   '/usr/lib/libem_x11_event_queue.so');
-  writeFromBuf(libX11Buf,       '/usr/lib/libX11.so');
-  writeFromBuf(libXftBuf,       '/usr/lib/libXft.so');
-  writeFromBuf(libXrenderBuf,   '/usr/lib/libXrender.so');
-  writeFromBuf(libfontconfigBuf,'/usr/lib/libfontconfig.so');
-  if (libtcldideBuf) writeFromBuf(libtcldideBuf, '/usr/lib/libtcldide.so');
-  writeFromBuf(libNotifierBuf,  '/usr/lib/libtcldide_notifier.so');
-  writeFromBuf(tkinterSoBuf,    '/lib/python3.14/site-packages/_tkinter.so');
-  /* turtle is a single-file stdlib module that imports tkinter; Pyodide
-   * strips it from python_stdlib.zip alongside tkinter, so we stage the
-   * CPython source copy next to _tkinter.so. Cheap (~150 KB) and lets
-   * any demo `import turtle` regardless of whether it uses it. */
-  writeFromBuf(turtleBuf,    '/lib/python3.14/site-packages/turtle.py');
-
-  py.FS.mkdirTree('/usr/lib/tcl8.6');
-  py.FS.mkdirTree('/usr/lib/tk8.6');
-  py.FS.mkdirTree('/lib/python3.14/site-packages/tkinter');
-  py.unpackArchive(tclLibBuf,     'tar', { extractDir: '/usr/lib/tcl8.6' });
-  py.unpackArchive(tkLibBuf,      'tar', { extractDir: '/usr/lib/tk8.6' });
-  py.unpackArchive(tkinterTarBuf, 'tar', { extractDir: '/lib/python3.14/site-packages/tkinter' });
+  const [libsTarBuf, pythonTarBuf] = await Promise.all([pending.libsTar, pending.pythonTar]);
+  py.unpackArchive(libsTarBuf,   'tar', { extractDir: '/usr/lib' });
+  py.unpackArchive(pythonTarBuf, 'tar', { extractDir: '/lib/python3.14/site-packages' });
 
   /* --- Stage: load em-x11 split side modules ---
    *
@@ -422,8 +371,10 @@ async function boot(
    */
   const wasmImports = pyi.memorySurface().LDSO.loadedLibsByName['__main__']?.exports;
   if (wasmImports) {
-    wasmImports['emscripten_sleep'] = (ms: number) =>
-      new Promise((resolve) => setTimeout(resolve, ms));
+    wasmImports['emscripten_sleep'] = (ms: number) => {
+      console.warn('[DIAG] worker.ts injected emscripten_sleep called, ms=', ms);
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    };
   }
   await pyi.loadDynlib('/usr/lib/libem_x11_event_queue.so', { global: true });
   await pyi.loadDynlib('/usr/lib/libtcl8.6.so', { global: true });
@@ -448,10 +399,12 @@ async function boot(
 
   /* libtcldide: ::tcldide::dom and ::tcldide::jscall Tcl commands. Loaded
    * globally so its Tcldide_Init export is reachable via ctypes.CDLL.
-   * Optional -- if the .so is missing (sibling tcldide not built),
-   * we skip silently and the prelude below no-ops. */
-  if (libtcldideBuf) {
+   * Optional — if the .so wasn't built (sibling tcldide missing from
+   * libs.tar), the prelude below catches the CDLL failure and no-ops. */
+  try {
     await pyi.loadDynlib('/usr/lib/libtcldide.so', { global: true });
+  } catch {
+    // libtcldide not built — ::tcldide::dom / ::tcldide::jscall unavailable
   }
 
   /* --- Stage: worker-side Python prelude ---

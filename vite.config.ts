@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 import type { Plugin, ResolvedServerUrls } from 'vite';
-import { resolve } from 'node:path';
-import { readdirSync, statSync, existsSync } from 'node:fs';
+import { resolve, join } from 'node:path';
+import { readdirSync, statSync, existsSync, createReadStream } from 'node:fs';
 
 // pyodide-tk web examples. Mirrors em-x11's structure: each examples/<name>/
 // is a single index.html with the Python in an inline
@@ -45,11 +45,49 @@ function printExampleUrls(): Plugin {
   };
 }
 
+const mimeByExt: Record<string, string> = {
+  '.wasm': 'application/wasm',
+  '.tar':  'application/x-tar',
+  '.zip':  'application/zip',
+  '.so':   'application/wasm',
+};
+
+function servePrecompressed(): Plugin {
+  return {
+    name: 'serve-precompressed',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.method !== 'GET' || !req.url) { next(); return; }
+        const ae = req.headers['accept-encoding'] || '';
+        if (!ae.includes('gzip')) { next(); return; }
+
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const pathname = url.pathname;
+
+        // Only compress large binary assets
+        if (!/\.(wasm|tar|zip)$/i.test(pathname)) { next(); return; }
+
+        const gzPath = join(server.config.publicDir || 'public', pathname + '.gz');
+        let gzStat;
+        try { gzStat = statSync(gzPath); } catch { next(); return; }
+        if (!gzStat.isFile()) { next(); return; }
+
+        const ext = pathname.slice(pathname.lastIndexOf('.')).toLowerCase();
+        res.setHeader('Content-Encoding', 'gzip');
+        res.setHeader('Content-Type', mimeByExt[ext] || 'application/octet-stream');
+        res.setHeader('Content-Length', gzStat.size);
+        res.setHeader('Vary', 'Accept-Encoding');
+        createReadStream(gzPath).pipe(res);
+      });
+    },
+  };
+}
+
 export default defineConfig({
   root: '.',
   publicDir: 'public',
 
-  plugins: [printExampleUrls()],
+  plugins: [printExampleUrls(), servePrecompressed()],
 
   resolve: {
     alias: {
