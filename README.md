@@ -11,11 +11,30 @@ Built on top of [Pyodide](https://pyodide.org/); Tk's X11 calls are handled by t
 # Prerequisites
 
 - Linux
-- Emscripten 5.0.3 (pinned by Pyodide 314; `emcc` must be on `PATH`)
+- Emscripten 5.0.3 (`emcc` must be on `PATH`)
 - Node.js ≥ 20, pnpm ≥ 9
-- Python ≥ 3.11 with Pyodide development environment — follow [Building from sources](https://pyodide.org/en/stable/development/building-from-sources.html) to install `pyodide-build` and xbuildenv
-- [em-x11](https://github.com/DevScholar/em-x11) cloned as a sibling directory (the Makefile auto-builds the native/ subset — no manual build needed)
-- [tcldide](https://github.com/DevScholar/tcldide) cloned as a sibling directory (**optional** — only needed for the `::tcldide::*` Tcl→DOM commands)
+- [em-x11](https://github.com/DevScholar/em-x11) cloned as a sibling directory (Makefile auto-builds the native/ subset — no manual build needed)
+- [tcldide](https://github.com/DevScholar/tcldide) cloned as a sibling directory (**optional** — only needed for `::tcldide::*` Tcl→DOM commands)
+- Pyodide xbuildenv — provides `Python.h` from a wasm-EH CPython build. Two options:
+
+  **Flow A — pre-built xbuildenv (simpler):**
+  ```bash
+  pip install pyodide-build
+  pyodide xbuildenv install 0.34.3
+  ```
+
+  **Flow B — build Pyodide from source:**
+  ```bash
+  git clone https://github.com/pyodide/pyodide.git ../pyodide
+  cd ../pyodide && make
+  ```
+  See [Building from sources](https://pyodide.org/en/stable/development/building-from-sources.html) for full details.
+  The Makefile auto-detects `../pyodide/xbuildenv` when Pyodide is cloned as a sibling.
+
+Regardless of flow, the Pyodide browser runtime (`pyodide.asm.wasm`, `pyodide.mjs`, etc.) is sourced from one of:
+- `$PYODIDE_DIST` env var — set to `<pyodide-source>/dist` if you built from source
+- `node_modules/pyodide` — the npm package (installed by `pnpm install`)
+- Both `setup.sh` and `stage-assets.sh` honor `PYODIDE_DIST`.
 
 # Quick start
 
@@ -29,7 +48,7 @@ pnpm dev       # starts Vite dev server
 # Build
 
 ```bash
-pnpm build
+pnpm build     # build:native → stage-assets → build:web (vite)
 ```
 
 # Run

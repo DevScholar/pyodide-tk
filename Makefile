@@ -23,10 +23,17 @@ EM_X11_PORT      = $(EM_X11_DIR)/tools/ports/em_x11.py
 EM_X11_BUILD_DIR = $(BUILD)/em-x11
 EM_X11_STAMP     = $(EM_X11_BUILD_DIR)/.built
 
-# CPython 3.14.2 source — needed for _tkinter.c. Either reuse the copy
-# pyodide-build's xbuildenv unpacks (`pyodide xbuildenv install 0.34.3`),
-# or fall back to fetching the source tarball from python.org.
-PYODIDE_XBUILDENV ?= $(HOME)/.cache/.pyodide-xbuildenv-0.34.3
+# CPython 3.14.2 source — needed for _tkinter.c.
+#
+# Two flows are supported (see https://pyodide.org/en/stable/development/building-from-sources.html):
+#   A. Pre-built xbuildenv:  pyodide xbuildenv install 0.34.3
+#      → $(HOME)/.cache/.pyodide-xbuildenv-0.34.3
+#   B. Build from source:    git clone pyodide && cd pyodide && make
+#      → $(CURDIR)/../pyodide/xbuildenv
+#
+# Auto-detection tries the source-build path first, then the cached path.
+# Override with PYODIDE_XBUILDENV=/custom/path.
+PYODIDE_XBUILDENV ?= $(or $(wildcard $(CURDIR)/../pyodide/xbuildenv),$(HOME)/.cache/.pyodide-xbuildenv-0.34.3)
 PYINC             ?= $(PYODIDE_XBUILDENV)/xbuildenv/xbuildenv/pyodide-root/cpython/installs/python-3.14.2/include/python3.14
 CPYTHON_VERSION   ?= 3.14.2
 CPYTHON_TARBALL    = cpython-v$(CPYTHON_VERSION).tar.gz

@@ -69,25 +69,53 @@ echo "em-x11 detected at $EM_X11_DIR — OK (archives auto-built by make)"
 
 # ---------------------------------------------------------------------------
 # Detect Pyodide xbuildenv (needed for _tkinter's Python.h)
+#
+# Two flows (see https://pyodide.org/en/stable/development/building-from-sources.html):
+#   A. Pre-built:  pyodide xbuildenv install 0.34.3
+#      → $HOME/.cache/.pyodide-xbuildenv-0.34.3
+#   B. Source:     git clone pyodide && cd pyodide && make
+#      → $SCRIPT_DIR/../pyodide/xbuildenv
+#
+# Auto-detect: source-build path first, then cached. Override with
+# PYODIDE_XBUILDENV=/custom/path.
 # ---------------------------------------------------------------------------
-PYODIDE_XBUILDENV="${PYODIDE_XBUILDENV:-$HOME/.cache/.pyodide-xbuildenv-0.34.3}"
-PYINC="$PYODIDE_XBUILDENV/xbuildenv/xbuildenv/pyodide-root/cpython/installs/python-3.14.2/include/python3.14"
+_detect_xbuildenv() {
+    if [ -n "${PYODIDE_XBUILDENV:-}" ]; then
+        echo "$PYODIDE_XBUILDENV"
+        return
+    fi
+    for cand in \
+        "$SCRIPT_DIR/../pyodide/xbuildenv" \
+        "$HOME/.cache/.pyodide-xbuildenv-0.34.3"
+    do
+        if [ -f "$cand/xbuildenv/xbuildenv/pyodide-root/cpython/installs/python-3.14.2/include/python3.14/Python.h" ]; then
+            echo "$cand"
+            return
+        fi
+    done
+    echo ""
+}
 
-if [ ! -f "$PYINC/Python.h" ]; then
-    echo "ERROR: Pyodide xbuildenv not found at $PYINC"
+PYODIDE_XBUILDENV="$(_detect_xbuildenv)"
+
+if [ -z "$PYODIDE_XBUILDENV" ]; then
+    echo "ERROR: Pyodide xbuildenv not found."
     echo ""
     echo "  The xbuildenv provides Python.h from a wasm-EH CPython build,"
     echo "  which is required to compile _tkinter.so."
     echo ""
-    echo "  Follow the Pyodide build-from-source guide to set up the"
-    echo "  development environment (including xbuildenv):"
+    echo "  Follow the Pyodide build-from-source guide:"
     echo "    https://pyodide.org/en/stable/development/building-from-sources.html"
     echo ""
-    echo "  Or override PYINC:"
-    echo "    PYINC=/path/to/python3.14/include make -j all"
+    echo "  Tried:"
+    echo "    - \$SCRIPT_DIR/../pyodide/xbuildenv"
+    echo "    - \$HOME/.cache/.pyodide-xbuildenv-0.34.3"
+    echo ""
+    echo "  Or override: PYODIDE_XBUILDENV=/path/to/xbuildenv"
     exit 1
 fi
 
+PYINC="$PYODIDE_XBUILDENV/xbuildenv/xbuildenv/pyodide-root/cpython/installs/python-3.14.2/include/python3.14"
 echo "xbuildenv detected at $PYODIDE_XBUILDENV — OK"
 
 # ---------------------------------------------------------------------------
