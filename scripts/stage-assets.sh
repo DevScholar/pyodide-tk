@@ -23,7 +23,6 @@ for f in \
     "$LIB/libtcl8.6.so" "$LIB/libtk8.6.so" \
     "$LIB/libem_x11_event_queue.so" \
     "$LIB/libX11.so" "$LIB/libXext.so" "$LIB/libXrender.so" "$LIB/libfontconfig.so" "$LIB/libXft.so" \
-    "$LIB/libtcldide_notifier.so" \
     "$TKD/_tkinter.so" \
     "$CPYLIB/turtle.py" \
     "ignored-area/third-party/tcl/library" "ignored-area/third-party/tk/library" "$CPYLIB/tkinter"
@@ -66,7 +65,6 @@ fi
 cp -u "$LIB"/libtcl8.6.so "$LIB"/libtk8.6.so \
     "$LIB"/libem_x11_event_queue.so \
     "$LIB"/libX11.so "$LIB"/libXext.so "$LIB"/libXrender.so "$LIB"/libfontconfig.so "$LIB"/libXft.so \
-    "$LIB"/libtcldide_notifier.so \
     "$PUB/lib/"
 if [[ -f "$LIB/libtcldide.so" ]]; then
     cp -u "$LIB/libtcldide.so" "$PUB/lib/"
@@ -115,6 +113,6 @@ done
 
 # --- Cleanup stale ---
 rm -rf "$PUB/tcl-library" "$PUB/tk-library" "$PUB/tkinter"
-rm -f "$PUB/lib/libwacl.so"
+rm -f "$PUB/lib/libwacl.so" "$PUB/lib/libemx11.so" "$PUB/lib/libtcldide_notifier.so"
 
 echo "stage-assets done."

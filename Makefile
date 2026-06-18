@@ -72,11 +72,11 @@ SIDE_LDFLAGS = -sSIDE_MODULE=1 $(WASMEH)
 
 .PHONY: all tclprep tkprep tkinter clean distclean toolcheck smoke-tcl libtcl-so stage cpython-src
 
-all: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(EM_X11_SIDE_MODULES_COPY) $(LIBDIR)/libtcldide.so $(LIBDIR)/libtcldide_notifier.so $(TKINTER_OUT)/_tkinter.so stage
+all: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(EM_X11_SIDE_MODULES_COPY) $(LIBDIR)/libtcldide.so $(TKINTER_OUT)/_tkinter.so stage
 
 # Stage built artefacts into public/ so the vite dev server picks them up.
 # Folded into `all` so a fresh clone -> `make` -> `pnpm dev` just works.
-stage: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(EM_X11_SIDE_MODULES_COPY) $(LIBDIR)/libtcldide.so $(LIBDIR)/libtcldide_notifier.so $(TKINTER_OUT)/_tkinter.so
+stage: $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libtk8.6.so $(EM_X11_SIDE_MODULES_COPY) $(LIBDIR)/libtcldide.so $(TKINTER_OUT)/_tkinter.so
 	bash $(CURDIR)/scripts/stage-assets.sh
 
 # smoke-tcl needs an alias because the recipe doesn't reference the .so by path.
@@ -405,29 +405,3 @@ $(LIBDIR)/libtcldide.so: $(TCLDIDE_SRC) $(LIBDIR)/libtcl8.6.so
 		-sERROR_ON_UNDEFINED_SYMBOLS=0 \
 		-o $(LIBDIR)/libtcldide.so
 
-# ---- libtcldide_notifier.so -----------------------------------------------
-# Browser-friendly Tcl notifier, moved from em-x11 to tcldide (the Tcl
-# integration owner).  Replaces Tcl's default Unix notifier via
-# Tcl_SetNotifier so the JS event loop drives Tk rather than a blocking
-# select().  Built as a side module so Pyodide can dlopen it.
-#
-# Depends on:
-#   Tcl_SetNotifier               → libtcl8.6.so (global:true)
-#   em_x11_deliver_pending_signals → libX11.so    (global:true)
-#   Module['emX11Host']           → set by pyodide-tk before dlopen
-#
-# Source lives in sibling tcldide/ (single source of truth, no copy).
-
-TCLDIDE_NOTIFIER_SRC = $(CURDIR)/../tcldide/runtime/notifier.c
-
-$(LIBDIR)/libtcldide_notifier.so: $(TCLDIDE_NOTIFIER_SRC) $(LIBDIR)/libtcl8.6.so $(LIBDIR)/libX11.so $(LIBDIR)/libem_x11_event_queue.so
-	@test -f $(TCLDIDE_NOTIFIER_SRC) || \
-		(echo "tcldide notifier source missing at $(TCLDIDE_NOTIFIER_SRC)"; exit 1)
-	mkdir -p $(LIBDIR)
-	emcc $(WASMEH) $(SIDE_CC) -sSIDE_MODULE=1 \
-		-I $(INCDIR) \
-		-I $(EM_X11_INCLUDES) \
-		$(TCLDIDE_NOTIFIER_SRC) \
-		$(LIBDIR)/libtcl8.6.so $(LIBDIR)/libX11.so $(LIBDIR)/libem_x11_event_queue.so \
-		-sERROR_ON_UNDEFINED_SYMBOLS=0 \
-		-o $(LIBDIR)/libtcldide_notifier.so

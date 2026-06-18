@@ -313,11 +313,11 @@ async function boot(
     post({ type: 'cursorChange', css });
   });
 
-  /* The browser-compatible Tcl notifier (libtcldide_notifier.so) is
-   * installed in the Python prelude before any Tcl interpreter exists.
-   * After that, Tcl_DoOneEvent(DONT_WAIT) drains file handlers directly
-   * — select() is never called.  The settle phase and mainloop both use
-   * dooneevent(2) exclusively.
+  /* libem_x11_event_queue.so provides strong poll/select overrides
+   * (loaded {global:true} below). Tcl's default Unix notifier calls
+   * select() which reaches our overridden poll(), which checks fd
+   * readiness and yields via emscripten_sleep for blocking waits.
+   * DONT_WAIT (timeout=0) returns immediately — no sleep, no JSPI unwind.
    *
    * wakePump stays a no-op: input messages that arrive before drain is
    * bound are harmless.  After boot, X events are picked up by the
@@ -342,32 +342,24 @@ async function boot(
   /* --- Stage: load em-x11 split side modules ---
    *
    * libem_x11_event_queue.so provides strong poll/select overrides
-   * and signal delivery.  It is loaded before libtcl8.6.so so that
-   * libtcl NEEDED-links it (__wrap_select resolution).
+   * and signal delivery.  Loaded {global:true} before libtcl8.6.so
+   * so its poll/select symbols override Pyodide's builtin stubs.
    *
-   * The browser-compatible Tcl notifier (libtcldide_notifier.so)
-   * is loaded after the X11 modules.  It calls Tcl_SetNotifier to
-   * replace the default Unix notifier, so Tcl_DoOneEvent never calls
-   * select() — all file handlers are drained directly.  The JS pump
-   * drives dooneevent(DONT_WAIT) in a polling loop, yielding between
-   * ticks via run_sync(asyncio.sleep()).  This avoids the JSPI
-   * emscripten_sleep block path that Pyodide's main module doesn't
-   * expose.
+   * Tcl's default Unix notifier calls select() which reaches our
+   * overridden poll(). DONT_WAIT (timeout=0) returns immediately;
+   * blocking waits yield via emscripten_sleep under JSPI.
    *
    *   1. libem_x11_event_queue.so — poll/select overrides + signal delivery
    *   2. libtcl8.6.so             — Tcl interpreter (NEEDED on event_queue)
    *   3. libXft.so                — NEEDED cascade: libX11, libXrender,
    *                                  libfontconfig
-   *   4. libtcldide_notifier.so   — Tcl_SetNotifier (browser event loop)
    *
    * _tkinter (loaded last) pulls libtk8.6.so via NEEDED; libtk's X11
    * symbols resolve from the already-loaded X11 split modules.
    *
-   * emscripten_sleep must be injected into wasmImports because both
-   * libem_x11_event_queue.so and libtcldide_notifier.so import it.
-   * The notifier's DONT_WAIT path never calls it, but loadDynlib
-   * resolves all undefined symbols at load time.  Must happen BEFORE
-   * the first loadDynlib.
+   * emscripten_sleep must be injected into wasmImports because
+   * libem_x11_event_queue.so imports it (poll() blocking path).
+   * Must happen BEFORE the first loadDynlib.
    */
   const wasmImports = pyi.memorySurface().LDSO.loadedLibsByName['__main__']?.exports;
   if (wasmImports) {
@@ -375,11 +367,18 @@ async function boot(
       console.warn('[DIAG] worker.ts injected emscripten_sleep called, ms=', ms);
       return new Promise((resolve) => setTimeout(resolve, ms));
     };
+    /* em_x11_drain_sab was the old SharedArrayBuffer-based ring-drain
+     * function from the pre-JSPI channel/worker mode (removed 2026-05-07).
+     * If a stale side module still imports it, provide a no-op stub so
+     * Pyodide's dynamic linker doesn't fail. The symbol is never called
+     * in the current DONT_WAIT polling path. */
+    wasmImports['em_x11_drain_sab'] = () => {
+      console.warn('[DIAG] worker.ts injected em_x11_drain_sab called unexpectedly');
+    };
   }
   await pyi.loadDynlib('/usr/lib/libem_x11_event_queue.so', { global: true });
   await pyi.loadDynlib('/usr/lib/libtcl8.6.so', { global: true });
   await pyi.loadDynlib('/usr/lib/libXft.so', { global: true });
-  await pyi.loadDynlib('/usr/lib/libtcldide_notifier.so', { global: true });
 
   /* Pre-bind libX11's exports as the default module for ANY future
    * XOpenDisplay. Doing this BEFORE _tkinter loads means tkinter.Tk()'s
@@ -421,11 +420,6 @@ async function boot(
    * Standard desktop tkinter / turtle / PySimpleGUI code assumes
    * `root.mainloop()` **blocks** until a callback invokes `root.quit()`.
    *
-   * The browser-compatible Tcl notifier (libtcldide_notifier.so) is
-   * installed at the top of the Python prelude via ctypes, before any
-   * Tcl interpreter exists.  After that, Tcl_DoOneEvent(DONT_WAIT)
-   * drains file handlers directly — select() is never called.
-   *
    * The mainloop pumps in a two-level loop:
    *   Inner: drain all queued events via dooneevent(2) (DONT_WAIT).
    *          Loop until the queue is empty or 256 cap, to avoid the
@@ -450,14 +444,6 @@ async function boot(
   await py.runPythonAsync(`
 import tkinter, asyncio, js, ctypes
 from pyodide.ffi import run_sync, create_once_callable
-
-# Install browser-compatible Tcl notifier BEFORE any Tcl interpreter is
-# created.  em_x11_install_browser_notifier calls Tcl_SetNotifier which
-# must run before Tcl_InitNotifier (called by first Tcl_CreateInterp).
-# After installation, Tcl_DoOneEvent(DONT_WAIT) drains file handlers
-# directly without calling select() — no JSPI emscripten_sleep needed.
-_notifier = ctypes.CDLL('/usr/lib/libtcldide_notifier.so')
-_notifier.em_x11_install_browser_notifier()
 
 # Emscripten has no LANG/LC_ALL; Tcl defaults to iso8859-1.
 # Pin system encoding to utf-8 so msgcat-sourced .msg files
@@ -527,9 +513,9 @@ def _em_x11_misc_mainloop(self, n=0):
     try:
         while _em_x11_quit_count[0] == target:
             # Drain all pending events without blocking.
-            # dooneevent(2) = TCL_DONT_WAIT.  The custom notifier's
-            # poll path (timePtr={0,0}) drains file handlers directly
-            # — no select(), no emscripten_sleep.  Loop until the
+            # dooneevent(2) = TCL_DONT_WAIT.  Tcl's default Unix
+            # notifier calls select(timeout=0), overridden by
+            # libem_x11_event_queue.so — returns immediately.  Loop until the
             # queue is empty to avoid the one-event-per-frame stall
             # that stretches widget realize/map/expose to seconds.
             drained = 0
@@ -606,8 +592,9 @@ def _em_x11_drain(max_n=256):
   /* --- Stage: settle ---
    *
    * Tk's realize/map/expose chain contains many `after 0` callbacks.
-   * drain() calls dooneevent(DONT_WAIT) in a Python loop; the custom
-   * notifier drains file handlers directly (poll path, no select()).
+   * drain() calls dooneevent(DONT_WAIT) in a Python loop; the default
+   * Unix notifier calls select(timeout=0) which returns immediately
+   * via the overridden poll() in libem_x11_event_queue.so.
    * Multiple passes account for callbacks that queue new callbacks.
    */
   const SETTLE_MAX_PASSES = 20;
