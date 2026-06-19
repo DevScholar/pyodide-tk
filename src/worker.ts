@@ -364,7 +364,6 @@ async function boot(
   const wasmImports = pyi.memorySurface().LDSO.loadedLibsByName['__main__']?.exports;
   if (wasmImports) {
     wasmImports['emscripten_sleep'] = (ms: number) => {
-      console.warn('[DIAG] worker.ts injected emscripten_sleep called, ms=', ms);
       return new Promise((resolve) => setTimeout(resolve, ms));
     };
     /* em_x11_drain_sab was the old SharedArrayBuffer-based ring-drain
@@ -373,7 +372,7 @@ async function boot(
      * Pyodide's dynamic linker doesn't fail. The symbol is never called
      * in the current DONT_WAIT polling path. */
     wasmImports['em_x11_drain_sab'] = () => {
-      console.warn('[DIAG] worker.ts injected em_x11_drain_sab called unexpectedly');
+      console.warn('[pyodide-tk] em_x11_drain_sab called unexpectedly — stale side module?');
     };
   }
   await pyi.loadDynlib('/usr/lib/libem_x11_event_queue.so', { global: true });
