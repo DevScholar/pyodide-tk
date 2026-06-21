@@ -59,16 +59,22 @@ WASMEH    = -fwasm-exceptions -sSUPPORT_LONGJMP=wasm
 SIDE_CC   = -fPIC
 
 OPT      ?= -Oz
+# JSPI is required so emscripten_sleep() in poll.c actually suspends the
+# wasm fiber. Without it the Promise from the injected emscripten_sleep
+# JS function is ignored, creating a tight spin-loop that freezes the page.
+# Added to both compile flags (for the poll.c compilation in em-x11) and
+# link flags (for side-module .so linking).
+JSPI_FLAGS = -sJSPI=1
 # -Dselect/poll: Pyodide main-module _select/_poll cannot be overridden
 # by side-module exports.  Rename at compile time so Tcl calls resolve
 # to __wrap_select/__wrap_poll from libem_x11_event_queue.so instead.
-CFLAGS_X  = $(OPT) $(WASMEH) $(SIDE_CC) -Dselect=__wrap_select -Dpoll=__wrap_poll
-LDFLAGS_X = $(WASMEH)
+CFLAGS_X  = $(OPT) $(WASMEH) $(JSPI_FLAGS) $(SIDE_CC) -Dselect=__wrap_select -Dpoll=__wrap_poll
+LDFLAGS_X = $(WASMEH) $(JSPI_FLAGS)
 
 # Side-module link flags. =1 auto-exports all non-static symbols
 # (what _tkinter wants from libtcl/libtk). =2 + EXPORTED_FUNCTIONS
 # would be smaller but the export list for Tcl/Tk is huge.
-SIDE_LDFLAGS = -sSIDE_MODULE=1 $(WASMEH)
+SIDE_LDFLAGS = -sSIDE_MODULE=1 $(WASMEH) $(JSPI_FLAGS)
 
 .PHONY: all tclprep tkprep tkinter clean distclean toolcheck smoke-tcl libtcl-so stage cpython-src
 
@@ -242,13 +248,21 @@ smoke-tcl: libtcl-so
 # libXrender, libfontconfig, libXft).  Third-party libs and demos are
 # skipped — pyodide-tk doesn't need them.
 
-$(EM_X11_STAMP): $(EM_X11_DIR)/native/CMakeLists.txt
+# Track every source file under em-x11/native/ so a .c or .h change
+# invalidates the stamp and re-runs cmake --build (which itself only
+# rebuilds changed .o files).  Without this, .so relinking silently
+# picks up stale .a archives.
+EM_X11_SRCFILES := $(shell find $(EM_X11_DIR)/native -type f \( -name '*.c' -o -name '*.h' -o -name 'CMakeLists.txt' \))
+
+$(EM_X11_STAMP): $(EM_X11_SRCFILES)
 	@echo "==> Configuring em-x11 (native subset) into $(EM_X11_BUILD_DIR)"
 	rm -rf $(EM_X11_BUILD_DIR)
 	mkdir -p $(EM_X11_BUILD_DIR)
 	cd $(EM_X11_BUILD_DIR) && emcmake cmake -S $(EM_X11_DIR)/native -B . \
 		-DCMAKE_BUILD_TYPE=Release \
-		-DEM_X11_HIDE_INTERNAL_SYMBOLS=OFF
+		-DEM_X11_HIDE_INTERNAL_SYMBOLS=OFF \
+		-DCMAKE_C_FLAGS="$(JSPI_FLAGS)" \
+		-DCMAKE_CXX_FLAGS="$(JSPI_FLAGS)"
 	@echo "==> Building em-x11 archives"
 	$(MAKE) -C $(EM_X11_BUILD_DIR) -j
 	touch $@
@@ -283,34 +297,35 @@ EM_X11_ARCHIVES = \
 	$(EM_X11_BUILD_DIR)/libXft.a
 
 EM_X11_RELINK = -Wl,--whole-archive $< -Wl,--no-whole-archive
+EM_X11_SO_FLAGS = $(WASMEH) $(JSPI_FLAGS) -sSIDE_MODULE=1 $(OPT)
 
 $(LIBDIR)/libem_x11_event_queue.so: $(EM_X11_BUILD_DIR)/libem_x11_event_queue.a
-	emcc $(WASMEH) -sSIDE_MODULE=1 $(OPT) -o $@ \
+	emcc $(EM_X11_SO_FLAGS) -o $@ \
 		$(EM_X11_RELINK) \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
 $(LIBDIR)/libX11.so: $(EM_X11_BUILD_DIR)/libX11.a $(LIBDIR)/libem_x11_event_queue.so
-	emcc $(WASMEH) -sSIDE_MODULE=1 $(OPT) -o $@ \
+	emcc $(EM_X11_SO_FLAGS) -o $@ \
 		$(EM_X11_RELINK) $(LIBDIR)/libem_x11_event_queue.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
 $(LIBDIR)/libXext.so: $(EM_X11_BUILD_DIR)/libXext.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so
-	emcc $(WASMEH) -sSIDE_MODULE=1 $(OPT) -o $@ \
+	emcc $(EM_X11_SO_FLAGS) -o $@ \
 		$(EM_X11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
 $(LIBDIR)/libXrender.so: $(EM_X11_BUILD_DIR)/libXrender.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so
-	emcc $(WASMEH) -sSIDE_MODULE=1 $(OPT) -o $@ \
+	emcc $(EM_X11_SO_FLAGS) -o $@ \
 		$(EM_X11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
 $(LIBDIR)/libfontconfig.so: $(EM_X11_BUILD_DIR)/libfontconfig.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so
-	emcc $(WASMEH) -sSIDE_MODULE=1 $(OPT) -o $@ \
+	emcc $(EM_X11_SO_FLAGS) -o $@ \
 		$(EM_X11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
 $(LIBDIR)/libXft.so: $(EM_X11_BUILD_DIR)/libXft.a $(LIBDIR)/libX11.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so $(LIBDIR)/libtcl8.6.so
-	emcc $(WASMEH) -sSIDE_MODULE=1 $(OPT) -o $@ \
+	emcc $(EM_X11_SO_FLAGS) -o $@ \
 		$(EM_X11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so $(LIBDIR)/libtcl8.6.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 

@@ -341,25 +341,13 @@ async function boot(
 
   /* --- Stage: load em-x11 split side modules ---
    *
-   * libem_x11_event_queue.so provides strong poll/select overrides
-   * and signal delivery.  Loaded {global:true} before libtcl8.6.so
-   * so its poll/select symbols override Pyodide's builtin stubs.
+   * Load order: libX11.so first because libem_x11_event_queue.so NEEDEDs
+   * the push functions (em_x11_push_*).  libX11.so in turn NEEDEDs
+   * libem_x11_event_queue.so (em_x11_event_queue_push), so loading
+   * libX11.so first triggers a recursive dlopen that resolves both.
    *
-   * Tcl's default Unix notifier calls select() which reaches our
-   * overridden poll(). DONT_WAIT (timeout=0) returns immediately;
-   * blocking waits yield via emscripten_sleep under JSPI.
-   *
-   *   1. libem_x11_event_queue.so — poll/select overrides + signal delivery
-   *   2. libtcl8.6.so             — Tcl interpreter (NEEDED on event_queue)
-   *   3. libXft.so                — NEEDED cascade: libX11, libXrender,
-   *                                  libfontconfig
-   *
-   * _tkinter (loaded last) pulls libtk8.6.so via NEEDED; libtk's X11
-   * symbols resolve from the already-loaded X11 split modules.
-   *
-   * emscripten_sleep must be injected into wasmImports because
+   * emscripten_sleep is injected into wasmImports because
    * libem_x11_event_queue.so imports it (poll() blocking path).
-   * Must happen BEFORE the first loadDynlib.
    */
   const wasmImports = pyi.memorySurface().LDSO.loadedLibsByName['__main__']?.exports;
   if (wasmImports) {
@@ -375,7 +363,9 @@ async function boot(
       console.warn('[pyodide-tk] em_x11_drain_sab called unexpectedly — stale side module?');
     };
   }
+  await pyi.loadDynlib('/usr/lib/libX11.so', { global: true });
   await pyi.loadDynlib('/usr/lib/libem_x11_event_queue.so', { global: true });
+
   await pyi.loadDynlib('/usr/lib/libtcl8.6.so', { global: true });
   await pyi.loadDynlib('/usr/lib/libXft.so', { global: true });
 
@@ -471,6 +461,29 @@ try:
 except OSError:
     pass
 
+# Load em_x11_is_blocking_in_poll for outer-pump gating.
+# When an inner event loop (tkwait/vwait) is blocked in poll() ->
+# emscripten_sleep(), g_in_blocking_poll == 1.  The outer pump MUST skip
+# dooneevent(DONT_WAIT) during this window to avoid stealing events
+# from the inner loop's ring buffer.
+try:
+    _em_x11_eq = ctypes.CDLL('/usr/lib/libem_x11_event_queue.so')
+    _em_x11_eq.em_x11_is_blocking_in_poll.restype = ctypes.c_int
+except OSError:
+    _em_x11_eq = None
+
+# emscripten_sleep() from side modules does NOT suspend JSPI fibers in
+# Emscripten 5.0.3 — the JSPI wrappers are only applied to the main module.
+# Register a ctypes callback that uses the main module's JSPI-capable
+# asyncio.sleep() to yield from the blocking poll path.
+try:
+    _poll_yield_cb_type = ctypes.CFUNCTYPE(None, ctypes.c_int)
+    _poll_yield_cb = _poll_yield_cb_type(lambda ms: run_sync(asyncio.sleep(ms / 1000)))
+    _em_x11_eq.em_x11_poll_set_yield_fn(_poll_yield_cb)
+except Exception as e:
+    import sys
+    print('poll_yield: failed to register yield callback:', e, file=sys.stderr)
+
 async def _em_x11_yield_frame():
     fut = asyncio.get_event_loop().create_future()
     # create_once_callable: keep the Python callback alive until JS
@@ -511,21 +524,23 @@ def _em_x11_misc_mainloop(self, n=0):
     tkapp = self.tk
     try:
         while _em_x11_quit_count[0] == target:
-            # Drain all pending events without blocking.
-            # dooneevent(2) = TCL_DONT_WAIT.  Tcl's default Unix
-            # notifier calls select(timeout=0), overridden by
-            # libem_x11_event_queue.so — returns immediately.  Loop until the
-            # queue is empty to avoid the one-event-per-frame stall
-            # that stretches widget realize/map/expose to seconds.
+            # Drain all pending events without blocking UNLESS an
+            # inner event loop (tkwait/vwait) is currently blocked
+            # in poll()->emscripten_sleep().  dooneevent(2) =
+            # TCL_DONT_WAIT.  Loop until queue is empty to avoid the
+            # one-event-per-frame stall that stretches widget
+            # realize/map/expose to seconds.
             drained = 0
-            while drained < 256:
-                try:
-                    got = tkapp.dooneevent(2)
-                except Exception:
-                    break
-                if not got:
-                    break
-                drained += 1
+            if (_em_x11_eq is None or
+                not _em_x11_eq.em_x11_is_blocking_in_poll()):
+                while drained < 256:
+                    try:
+                        got = tkapp.dooneevent(2)
+                    except Exception:
+                        break
+                    if not got:
+                        break
+                    drained += 1
             # Yield to the browser event loop so rAF fires, input
             # arrives, and the page stays responsive.  5ms matches
             # typical rAF intervals and keeps idle CPU near zero.
