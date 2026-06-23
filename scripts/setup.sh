@@ -9,7 +9,7 @@
 # External dependencies — detected but NOT fetched. If missing the script
 # prints install instructions and exits; the user installs them and re-runs.
 #   - em-x11       sibling dir, cloned (archives auto-built by make)
-#   - xbuildenv    see https://pyodide.org/en/stable/development/building-from-sources.html
+#   - xbuildenv    auto-downloaded from GitHub releases (no pip/pyodide-build needed)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -34,7 +34,7 @@ fi
 # Prerequisite check
 # ---------------------------------------------------------------------------
 missing=()
-for cmd in emcc make wget; do
+for cmd in emcc make wget curl; do
     command -v "$cmd" &>/dev/null || missing+=("$cmd")
 done
 
@@ -68,55 +68,46 @@ fi
 echo "em-x11 detected at $EM_X11_DIR — OK (archives auto-built by make)"
 
 # ---------------------------------------------------------------------------
-# Detect Pyodide xbuildenv (needed for _tkinter's Python.h)
+# Detect / auto-download Pyodide xbuildenv (needed for _tkinter's Python.h)
 #
-# Two flows (see https://pyodide.org/en/stable/development/building-from-sources.html):
-#   A. Pre-built:  pyodide xbuildenv install 0.34.3
-#      → $HOME/.cache/.pyodide-xbuildenv-0.34.3
-#   B. Source:     git clone pyodide && cd pyodide && make
-#      → $SCRIPT_DIR/../pyodide/xbuildenv
-#
-# Auto-detect: source-build path first, then cached. Override with
-# PYODIDE_XBUILDENV=/custom/path.
+# The xbuildenv is a ~19 MB pre-built CPython wasm-headers tarball published
+# alongside each Pyodide release on GitHub. We download and cache it directly
+# — no pip/pyodide-build required.
 # ---------------------------------------------------------------------------
-_detect_xbuildenv() {
-    if [ -n "${PYODIDE_XBUILDENV:-}" ]; then
-        echo "$PYODIDE_XBUILDENV"
-        return
+XBUILDENV_VERSION="${XBUILDENV_VERSION:-314.0.0a1}"
+XBUILDENV_URL="https://github.com/pyodide/pyodide/releases/download/${XBUILDENV_VERSION}/xbuildenv-${XBUILDENV_VERSION}.tar.bz2"
+XBUILDENV_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/pyodide-tk-xbuildenv"
+XBUILDENV_DIR="$XBUILDENV_CACHE/$XBUILDENV_VERSION"
+# The tarball unpacks with a double xbuildenv/xbuildenv/ prefix, and the
+# CPython headers land at xbuildenv/xbuildenv/pyodide-root/cpython/installs/.
+PYINC="$XBUILDENV_DIR/xbuildenv/xbuildenv/pyodide-root/cpython/installs/python-3.14.2/include/python3.14"
+
+# Also check the legacy pyodide-build cache path for backward compatibility.
+LEGACY_XBUILDENV="$HOME/.cache/.pyodide-xbuildenv-0.34.3/xbuildenv/xbuildenv/pyodide-root/cpython/installs/python-3.14.2/include/python3.14"
+
+if [ -f "$PYINC/Python.h" ]; then
+    echo "xbuildenv detected at $XBUILDENV_DIR — OK"
+elif [ -f "$LEGACY_XBUILDENV/Python.h" ]; then
+    echo "xbuildenv detected at legacy path $HOME/.cache/.pyodide-xbuildenv-0.34.3 — OK"
+    XBUILDENV_DIR="$HOME/.cache/.pyodide-xbuildenv-0.34.3"
+    PYINC="$LEGACY_XBUILDENV"
+else
+    echo "xbuildenv not found — downloading ${XBUILDENV_VERSION} from GitHub..."
+    mkdir -p "$XBUILDENV_DIR"
+    curl -L --progress-bar "$XBUILDENV_URL" | tar -xjf - -C "$XBUILDENV_DIR" --strip-components=1
+    if [ ! -f "$PYINC/Python.h" ]; then
+        echo "ERROR: xbuildenv download failed — Python.h not found after extraction"
+        echo "       Tried: $XBUILDENV_URL"
+        exit 1
     fi
-    for cand in \
-        "$SCRIPT_DIR/../pyodide/xbuildenv" \
-        "$HOME/.cache/.pyodide-xbuildenv-0.34.3"
-    do
-        if [ -f "$cand/xbuildenv/xbuildenv/pyodide-root/cpython/installs/python-3.14.2/include/python3.14/Python.h" ]; then
-            echo "$cand"
-            return
-        fi
-    done
-    echo ""
-}
-
-PYODIDE_XBUILDENV="$(_detect_xbuildenv)"
-
-if [ -z "$PYODIDE_XBUILDENV" ]; then
-    echo "ERROR: Pyodide xbuildenv not found."
-    echo ""
-    echo "  The xbuildenv provides Python.h from a wasm-EH CPython build,"
-    echo "  which is required to compile _tkinter.so."
-    echo ""
-    echo "  Follow the Pyodide build-from-source guide:"
-    echo "    https://pyodide.org/en/stable/development/building-from-sources.html"
-    echo ""
-    echo "  Tried:"
-    echo "    - \$SCRIPT_DIR/../pyodide/xbuildenv"
-    echo "    - \$HOME/.cache/.pyodide-xbuildenv-0.34.3"
-    echo ""
-    echo "  Or override: PYODIDE_XBUILDENV=/path/to/xbuildenv"
-    exit 1
+    echo "xbuildenv installed to $XBUILDENV_DIR — OK"
 fi
 
-PYINC="$PYODIDE_XBUILDENV/xbuildenv/xbuildenv/pyodide-root/cpython/installs/python-3.14.2/include/python3.14"
-echo "xbuildenv detected at $PYODIDE_XBUILDENV — OK"
+# Export for the Makefile so it picks up the detected path.
+# The Makefile derives PYINC from PYODIDE_XBUILDENV as:
+#   $(PYODIDE_XBUILDENV)/xbuildenv/xbuildenv/pyodide-root/.../include/python3.14
+export PYODIDE_XBUILDENV="$XBUILDENV_DIR"
+export PYINC
 
 # ---------------------------------------------------------------------------
 # Detect tcldide sibling (optional — libtcldide.so)

@@ -41,18 +41,7 @@ fi
 mkdir -p public/pyodide "$PUB/lib"
 
 # --- Pyodide runtime ---
-# Prefer PYODIDE_DIST (from a Pyodide source build: dist/ contains
-# pyodide.asm.wasm, pyodide.mjs, etc.). Fall back to node_modules/pyodide
-# (npm package, installed by pnpm). If neither is found, the guarded
-# glob silently skips — the user provides Pyodide another way.
-if [[ -n "${PYODIDE_DIST:-}" && -d "$PYODIDE_DIST" ]]; then
-    for f in "$PYODIDE_DIST"/pyodide.asm.mjs "$PYODIDE_DIST"/pyodide.asm.wasm \
-             "$PYODIDE_DIST"/pyodide.mjs "$PYODIDE_DIST"/pyodide.js \
-             "$PYODIDE_DIST"/python_stdlib.zip "$PYODIDE_DIST"/pyodide-lock.json
-    do
-        [[ -f "$f" ]] && cp -u "$f" public/pyodide/
-    done
-elif [[ -d $PYNM ]]; then
+if [[ -d $PYNM ]]; then
     for f in "$PYNM"/pyodide.asm.mjs "$PYNM"/pyodide.asm.wasm \
              "$PYNM"/pyodide.mjs "$PYNM"/pyodide.js "$PYNM"/pyodide.d.ts \
              "$PYNM"/python_stdlib.zip "$PYNM"/pyodide-lock.json

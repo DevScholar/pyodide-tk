@@ -171,9 +171,9 @@ emcc -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -fPIC -sSIDE_MODULE=1 \
     -o _tkinter.so
 ```
 - `$(PYINC)` is `Python.h` from the Pyodide xbuildenv
-  (`pyodide xbuildenv install 0.34.3`). Reusing the xbuildenv
-  guarantees `_tkinter.so` is ABI-compatible with the CPython
-  Pyodide loads at runtime.
+  (pre-built tarball auto-downloaded by `scripts/setup.sh`).
+  Reusing the xbuildenv guarantees `_tkinter.so` is ABI-compatible
+  with the CPython Pyodide loads at runtime.
 - `-DPy_BUILD_CORE_BUILTIN=1` plus `Include/internal/` are required
   because CPython 3.14's `_tkinter.c` references private headers
   (e.g. `pycore_long.h`) under that gate.

@@ -23,17 +23,14 @@ EM_X11_PORT      = $(EM_X11_DIR)/tools/ports/em_x11.py
 EM_X11_BUILD_DIR = $(BUILD)/em-x11
 EM_X11_STAMP     = $(EM_X11_BUILD_DIR)/.built
 
-# CPython 3.14.2 source — needed for _tkinter.c.
-#
-# Two flows are supported (see https://pyodide.org/en/stable/development/building-from-sources.html):
-#   A. Pre-built xbuildenv:  pyodide xbuildenv install 0.34.3
-#      → $(HOME)/.cache/.pyodide-xbuildenv-0.34.3
-#   B. Build from source:    git clone pyodide && cd pyodide && make
-#      → $(CURDIR)/../pyodide/xbuildenv
-#
-# Auto-detection tries the source-build path first, then the cached path.
-# Override with PYODIDE_XBUILDENV=/custom/path.
-PYODIDE_XBUILDENV ?= $(or $(wildcard $(CURDIR)/../pyodide/xbuildenv),$(HOME)/.cache/.pyodide-xbuildenv-0.34.3)
+# CPython 3.14.2 wasm-headers — needed to compile _tkinter.c.
+# setup.sh auto-downloads the pre-built xbuildenv tarball from GitHub
+# releases; override here if you placed it elsewhere.
+XBUILDENV_NEW    = $(HOME)/.cache/pyodide-tk-xbuildenv/314.0.0a1
+XBUILDENV_LEGACY = $(HOME)/.cache/.pyodide-xbuildenv-0.34.3
+PYODIDE_XBUILDENV ?= $(or $(and $(wildcard $(XBUILDENV_NEW)/xbuildenv/xbuildenv/pyodide-root/cpython/installs/python-3.14.2/include/python3.14/Python.h),$(XBUILDENV_NEW)),\
+                          $(and $(wildcard $(XBUILDENV_LEGACY)/xbuildenv/xbuildenv/pyodide-root/cpython/installs/python-3.14.2/include/python3.14/Python.h),$(XBUILDENV_LEGACY)),\
+                          $(XBUILDENV_NEW))
 PYINC             ?= $(PYODIDE_XBUILDENV)/xbuildenv/xbuildenv/pyodide-root/cpython/installs/python-3.14.2/include/python3.14
 CPYTHON_VERSION   ?= 3.14.2
 CPYTHON_TARBALL    = cpython-v$(CPYTHON_VERSION).tar.gz
@@ -300,6 +297,7 @@ EM_X11_RELINK = -Wl,--whole-archive $< -Wl,--no-whole-archive
 EM_X11_SO_FLAGS = $(WASMEH) $(JSPI_FLAGS) -sSIDE_MODULE=1 $(OPT)
 
 $(LIBDIR)/libem_x11_event_queue.so: $(EM_X11_BUILD_DIR)/libem_x11_event_queue.a
+	mkdir -p $(LIBDIR)
 	emcc $(EM_X11_SO_FLAGS) -o $@ \
 		$(EM_X11_RELINK) \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
@@ -338,7 +336,7 @@ $(LIBDIR)/.em-x11-side-modules.stamp: $(LIBDIR)/libem_x11_event_queue.so $(LIBDI
 # We need _tkinter.c and tkappinit.c from CPython's Modules/, plus the
 # Include/ tree to compile against. Source comes from python.org's tarball
 # (mirrors the Tcl/Tk fetch pattern); the matching Python.h headers come
-# from pyodide-build's xbuildenv (`pyodide xbuildenv install 0.34.3`),
+# from the pre-built xbuildenv tarball (auto-downloaded by setup.sh),
 # which guarantees they're built with the same Emscripten ABI Pyodide
 # itself uses at runtime.
 
@@ -374,12 +372,13 @@ $(CPYTHON_SRC)/_tkinter.c: $(TARBALLS)/$(CPYTHON_TARBALL)
 cpython-src: $(CPYTHON_SRC)/_tkinter.c
 
 # Toolchain check for _tkinter: the xbuildenv must be installed because we
-# need Python.h from the wasm-EH-built CPython. Bail with a clear message
-# if the user hasn't run `pyodide xbuildenv install 0.34.3`.
+# need Python.h from the wasm-EH-built CPython. setup.sh auto-downloads it;
+# if running make standalone, override PYODIDE_XBUILDENV or PYINC.
 $(PYINC)/Python.h:
 	@echo "ERROR: Pyodide xbuildenv not found at $(PYINC)" >&2
-	@echo "       Run: pip install pyodide-build && pyodide xbuildenv install 0.34.3" >&2
-	@echo "       Or override PYINC=/path/to/python3.14/include on the make line." >&2
+	@echo "       Run scripts/setup.sh to auto-download it, or set:" >&2
+	@echo "         PYODIDE_XBUILDENV=/path/to/xbuildenv" >&2
+	@echo "         PYINC=/path/to/python3.14/include" >&2
 	@exit 1
 
 tkinter: $(TKINTER_OUT)/_tkinter.so
