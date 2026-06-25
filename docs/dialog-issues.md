@@ -35,7 +35,7 @@ Python mainloop: run_sync(asyncio.sleep(0.005))  ← JSPI yield (works)
         → filedialog.askopenfilename()
           → tkwait window
             → Tcl blocking event loop
-              → select() → poll()                ← in libem_x11_event_queue.so
+              → select() → poll()                ← in libem_x11_libc_override.so
                 → NEEDS TO YIELD HERE
 ```
 
