@@ -313,7 +313,7 @@ async function boot(
     post({ type: 'cursorChange', css });
   });
 
-  /* libem_x11_event_queue.so provides strong poll/select overrides
+  /* libem_x11_libc_override.so provides strong poll/select overrides
    * (loaded {global:true} below). Tcl's default Unix notifier calls
    * select() which reaches our overridden poll(), which checks fd
    * readiness and yields via emscripten_sleep for blocking waits.
@@ -341,13 +341,13 @@ async function boot(
 
   /* --- Stage: load em-x11 split side modules ---
    *
-   * Load order: libX11.so first because libem_x11_event_queue.so NEEDEDs
+   * Load order: libX11.so first because libem_x11_libc_override.so NEEDEDs
    * the push functions (em_x11_push_*).  libX11.so in turn NEEDEDs
-   * libem_x11_event_queue.so (em_x11_event_queue_push), so loading
+   * libem_x11_libc_override.so (em_x11_libc_override_push), so loading
    * libX11.so first triggers a recursive dlopen that resolves both.
    *
    * emscripten_sleep is injected into wasmImports because
-   * libem_x11_event_queue.so imports it (poll() blocking path).
+   * libem_x11_libc_override.so imports it (poll() blocking path).
    */
   const wasmImports = pyi.memorySurface().LDSO.loadedLibsByName['__main__']?.exports;
   if (wasmImports) {
@@ -364,7 +364,7 @@ async function boot(
     };
   }
   await pyi.loadDynlib('/usr/lib/libX11.so', { global: true });
-  await pyi.loadDynlib('/usr/lib/libem_x11_event_queue.so', { global: true });
+  await pyi.loadDynlib('/usr/lib/libem_x11_libc_override.so', { global: true });
 
   await pyi.loadDynlib('/usr/lib/libtcl8.6.so', { global: true });
   await pyi.loadDynlib('/usr/lib/libXft.so', { global: true });
@@ -467,7 +467,7 @@ except OSError:
 # dooneevent(DONT_WAIT) during this window to avoid stealing events
 # from the inner loop's ring buffer.
 try:
-    _em_x11_eq = ctypes.CDLL('/usr/lib/libem_x11_event_queue.so')
+    _em_x11_eq = ctypes.CDLL('/usr/lib/libem_x11_libc_override.so')
     _em_x11_eq.em_x11_is_blocking_in_poll.restype = ctypes.c_int
 except OSError:
     _em_x11_eq = None
@@ -608,7 +608,7 @@ def _em_x11_drain(max_n=256):
    * Tk's realize/map/expose chain contains many `after 0` callbacks.
    * drain() calls dooneevent(DONT_WAIT) in a Python loop; the default
    * Unix notifier calls select(timeout=0) which returns immediately
-   * via the overridden poll() in libem_x11_event_queue.so.
+   * via the overridden poll() in libem_x11_libc_override.so.
    * Multiple passes account for callbacks that queue new callbacks.
    */
   const SETTLE_MAX_PASSES = 20;

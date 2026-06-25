@@ -21,7 +21,7 @@ CPYLIB=ignored-area/third-party/cpython/cpython-3.14.2/Lib
 missing=()
 for f in \
     "$LIB/libtcl8.6.so" "$LIB/libtk8.6.so" \
-    "$LIB/libem_x11_event_queue.so" \
+    "$LIB/libem_x11_libc_override.so" \
     "$LIB/libX11.so" "$LIB/libXext.so" "$LIB/libXrender.so" "$LIB/libfontconfig.so" "$LIB/libXft.so" \
     "$TKD/_tkinter.so" \
     "$CPYLIB/turtle.py" \
@@ -52,7 +52,7 @@ fi
 
 # --- Side modules: copy individually (kept for direct URL access / fallback) ---
 cp -u "$LIB"/libtcl8.6.so "$LIB"/libtk8.6.so \
-    "$LIB"/libem_x11_event_queue.so \
+    "$LIB"/libem_x11_libc_override.so \
     "$LIB"/libX11.so "$LIB"/libXext.so "$LIB"/libXrender.so "$LIB"/libfontconfig.so "$LIB"/libXft.so \
     "$PUB/lib/"
 if [[ -f "$LIB/libtcldide.so" ]]; then

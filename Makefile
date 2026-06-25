@@ -64,7 +64,7 @@ OPT      ?= -Oz
 JSPI_FLAGS = -sJSPI=1
 # -Dselect/poll: Pyodide main-module _select/_poll cannot be overridden
 # by side-module exports.  Rename at compile time so Tcl calls resolve
-# to __wrap_select/__wrap_poll from libem_x11_event_queue.so instead.
+# to __wrap_select/__wrap_poll from libem_x11_libc_override.so instead.
 CFLAGS_X  = $(OPT) $(WASMEH) $(JSPI_FLAGS) $(SIDE_CC) -Dselect=__wrap_select -Dpoll=__wrap_poll
 LDFLAGS_X = $(WASMEH) $(JSPI_FLAGS)
 
@@ -138,13 +138,13 @@ $(LIBDIR)/libtcl8.6.a: $(THIRDPARTY)/tcl/unix/libtcl8.6.a
 
 # Relink the static archive into a Pyodide-style side module.
 # --whole-archive forces all object files in to keep public symbols.
-# libem_x11_event_queue.so on the link line creates a NEEDED entry so
+# libem_x11_libc_override.so on the link line creates a NEEDED entry so
 # __wrap_select/__wrap_poll resolve from it (Pyodide loadDynlib ignores
 # {global:true}, so only NEEDED-chain visibility works).
-$(LIBDIR)/libtcl8.6.so: $(LIBDIR)/libtcl8.6.a $(LIBDIR)/libem_x11_event_queue.so
+$(LIBDIR)/libtcl8.6.so: $(LIBDIR)/libtcl8.6.a $(LIBDIR)/libem_x11_libc_override.so
 	emcc $(SIDE_LDFLAGS) -o $@ \
 		-Wl,--whole-archive $(LIBDIR)/libtcl8.6.a -Wl,--no-whole-archive \
-		$(LIBDIR)/libem_x11_event_queue.so
+		$(LIBDIR)/libem_x11_libc_override.so
 
 # ---- Tk ----------------------------------------------------------------
 # Stock Tk 8.6 against em-x11's Xlib. Same trick as tcldide: --with-x
@@ -197,13 +197,13 @@ $(THIRDPARTY)/tk/unix/libtk8.6.a: $(THIRDPARTY)/tk/unix/Makefile
 # em-x11; we pass them as undefined for now (the .so link step will
 # resolve them at the next layer). --no-whole-archive on libtcl avoids
 # duplicating its objects (libtcl-so already exports them).
-$(LIBDIR)/libtk8.6.so: $(THIRDPARTY)/tk/unix/libtk8.6.a $(LIBDIR)/libem_x11_event_queue.so
+$(LIBDIR)/libtk8.6.so: $(THIRDPARTY)/tk/unix/libtk8.6.a $(LIBDIR)/libem_x11_libc_override.so
 	mkdir -p $(LIBDIR) $(INCDIR)/tk
 	cp $(THIRDPARTY)/tk/unix/libtk8.6.a $(THIRDPARTY)/tk/unix/libtkstub8.6.a $(LIBDIR)/
 	cp $(THIRDPARTY)/tk/generic/*.h $(INCDIR)/tk/
 	emcc $(SIDE_LDFLAGS) -o $(LIBDIR)/libtk8.6.so \
 		-Wl,--whole-archive $(LIBDIR)/libtk8.6.a -Wl,--no-whole-archive \
-		$(LIBDIR)/libem_x11_event_queue.so \
+		$(LIBDIR)/libem_x11_libc_override.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
 clean:
@@ -264,7 +264,7 @@ $(EM_X11_STAMP): $(EM_X11_SRCFILES)
 	$(MAKE) -C $(EM_X11_BUILD_DIR) -j
 	touch $@
 
-$(EM_X11_BUILD_DIR)/libem_x11_event_queue.a: $(EM_X11_STAMP)
+$(EM_X11_BUILD_DIR)/libem_x11_libc_override.a: $(EM_X11_STAMP)
 $(EM_X11_BUILD_DIR)/libX11.a: $(EM_X11_STAMP)
 $(EM_X11_BUILD_DIR)/libXext.a: $(EM_X11_STAMP)
 $(EM_X11_BUILD_DIR)/libXrender.a: $(EM_X11_STAMP)
@@ -286,7 +286,7 @@ $(EM_X11_BUILD_DIR)/libXft.a: $(EM_X11_STAMP)
 # GLX is excluded — _tkinter doesn't use OpenGL.
 
 EM_X11_ARCHIVES = \
-	$(EM_X11_BUILD_DIR)/libem_x11_event_queue.a \
+	$(EM_X11_BUILD_DIR)/libem_x11_libc_override.a \
 	$(EM_X11_BUILD_DIR)/libX11.a \
 	$(EM_X11_BUILD_DIR)/libXext.a \
 	$(EM_X11_BUILD_DIR)/libXrender.a \
@@ -296,15 +296,15 @@ EM_X11_ARCHIVES = \
 EM_X11_RELINK = -Wl,--whole-archive $< -Wl,--no-whole-archive
 EM_X11_SO_FLAGS = $(WASMEH) $(JSPI_FLAGS) -sSIDE_MODULE=1 $(OPT)
 
-$(LIBDIR)/libem_x11_event_queue.so: $(EM_X11_BUILD_DIR)/libem_x11_event_queue.a
+$(LIBDIR)/libem_x11_libc_override.so: $(EM_X11_BUILD_DIR)/libem_x11_libc_override.a
 	mkdir -p $(LIBDIR)
 	emcc $(EM_X11_SO_FLAGS) -o $@ \
 		$(EM_X11_RELINK) \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
-$(LIBDIR)/libX11.so: $(EM_X11_BUILD_DIR)/libX11.a $(LIBDIR)/libem_x11_event_queue.so
+$(LIBDIR)/libX11.so: $(EM_X11_BUILD_DIR)/libX11.a $(LIBDIR)/libem_x11_libc_override.so
 	emcc $(EM_X11_SO_FLAGS) -o $@ \
-		$(EM_X11_RELINK) $(LIBDIR)/libem_x11_event_queue.so \
+		$(EM_X11_RELINK) $(LIBDIR)/libem_x11_libc_override.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
 $(LIBDIR)/libXext.so: $(EM_X11_BUILD_DIR)/libXext.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so
@@ -329,7 +329,7 @@ $(LIBDIR)/libXft.so: $(EM_X11_BUILD_DIR)/libXft.a $(LIBDIR)/libX11.so $(LIBDIR)/
 
 EM_X11_SIDE_MODULES_COPY = $(LIBDIR)/.em-x11-side-modules.stamp
 
-$(LIBDIR)/.em-x11-side-modules.stamp: $(LIBDIR)/libem_x11_event_queue.so $(LIBDIR)/libX11.so $(LIBDIR)/libXext.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so $(LIBDIR)/libXft.so
+$(LIBDIR)/.em-x11-side-modules.stamp: $(LIBDIR)/libem_x11_libc_override.so $(LIBDIR)/libX11.so $(LIBDIR)/libXext.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so $(LIBDIR)/libXft.so
 	touch $@
 
 # ---- CPython source + _tkinter.so --------------------------------------
