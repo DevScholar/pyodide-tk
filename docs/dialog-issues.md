@@ -446,6 +446,156 @@ prevents X11 request processing and freezes before `Tk_MapWindow` completes.
 
 **Status**: failed (freeze). All 11 experiments failed.
 
+## Experiment 13: Python tkwait override via createcommand (2026-06-25)
+
+After Experiment 12a proved that `--wrap TkUnixDoOneXEvent` successfully
+bypasses `WaitForConfigureNotify`, the remaining freeze point is `tkwait`
+(`Tk_TkwaitObjCmd`). Experiment 12b showed that a C-level DONT_WAIT
+replacement causes OOM. This experiment tries a **Python-level** replacement:
+use `tk.createcommand('tkwait', ...)` to replace the C command with a Python
+function that yields via `run_sync(asyncio.sleep(0.005))` — the same JSPI
+mechanism the outer mainloop uses successfully.
+
+The intended call chain (all Wasm, no JS frames):
+
+```
+Tcl (side module) → Tcl command dispatch
+  → createcommand wrapper (_tkinter.so side module)
+    → Python callback (main module)
+      → run_sync(asyncio.sleep(0.005))
+        → JS import → Promise → JSPI SUSPEND (same as outer mainloop)
+```
+
+Three modes implemented:
+- **variable**: Tcl `trace variable name wu cb` + yielding loop
+- **visibility**: Tk `<Map>` + `<Destroy>` bindings + `winfo ismapped` check
+- **window**: Tk `<Destroy>` binding
+
+The replacement is installed via a `Tk.__init__` monkey-patch (same pattern
+as the tcldide bridge), so it runs after the Tcl interpreter is fully
+initialized.
+
+**Result**: `SuspendError: trying to suspend JS frames`
+
+**Why (confirmed by stack trace)**: The Python tkwait callback is invoked from
+Tcl's command dispatch (side module), which reaches Python via `trampoline_call`
+— a JS stub created by Emscripten's dynamic linker for cross-module calls. The
+stack trace confirms:
+
+```
+setTimeout → scheduleCallback → JsvFunction_CallBound (JS)
+  → Wasm (main module: PyObject_Vectorcall, _PyEval_EvalFrameDefault, ...)
+    → trampoline_call (JS: side-module import stub)
+      → Wasm (side module: Tcl command dispatch → createcommand → Python callback)
+        → run_sync(...) → JS import → Promise
+          → JSPI walks stack → trampoline_call (JS frame) → ERROR
+```
+
+The same JS trampoline that blocked Experiment 10 (extern Python C API) is
+present here. Even though the Python function *itself* runs in the main
+module, the **call path** from Tcl to Python crosses a side-module-to-main-module
+boundary with a JS trampoline. This is the same fatal issue as Experiment 10.
+
+**Key takeaway**: The tkwait override was installed correctly (confirmed:
+`info commands tkwait` shows the replacement), and the yielding logic is
+identical to the working outer mainloop. The failure is not in the Python
+code but in the call chain that reaches it — any Python function called
+from Tcl (via `createcommand`, button `-command`, variable trace, etc.)
+crosses a JS trampoline that blocks JSPI suspension.
+
+This rules out ALL approaches that try to trigger JSPI from a Tcl callback
+context, including:
+- Replacing `tkwait` with a yielding Python function
+- Making messagebox/filedialog call async Python code
+- Using `after` callbacks to yield during dialog waits
+- Any form of `run_sync` or `asyncio.sleep` from within Tcl→Python callbacks
+
+## Experiment 12: Source-level function override via --wrap (2026-06-25)
+
+Instead of modifying poll.c or worker.ts yield mechanisms, this approach
+patches Tk itself at link time: use `-Wl,--wrap=<symbol>` to redirect
+blocking Tk functions to non-blocking replacements. The patched `.so` is
+compiled from source files in `src/patch/` (tracked by git), not by
+modifying `ignored-area/` (untracked) or `tcldide/opt/` (shared).
+
+### Experiment 12a: --wrap TkUnixDoOneXEvent
+
+`TkUnixDoOneXEvent` (in `tkUnixEvent.c`) is the exported function that
+`WaitForConfigureNotify` / `WaitForMapNotify` / `WaitForEvent` all call
+to block waiting for WM responses. It calls `select()` with a timeout.
+
+**Changes**:
+- Created `src/patch/tkUnixEvent_wrap.c` — defines `__wrap_TkUnixDoOneXEvent`
+  that calls `Tcl_ServiceEvent(TCL_ALL_EVENTS)` (drains queued events
+  without blocking) and returns 0 ("timeout") immediately if no events.
+- Makefile: compiles wrapper `.o`, links into `libtk8.6.so` with
+  `-Wl,--wrap=TkUnixDoOneXEvent`. wasm-ld renames the original to
+  `__real_TkUnixDoOneXEvent` and redirects all call sites to the wrapper.
+
+**Result**: **Success — freeze moved.** `WaitForConfigureNotify` no longer
+blocks; Tk proceeds past `Tk_MapWindow` without WM synchronization. The
+dialog continues to the next blocking point (`tkwait`). This proves the
+`--wrap` override mechanism works for exported Tk symbols.
+
+**Why this works**: `WaitForConfigureNotify` can be safely skipped in em-x11.
+It exists to synchronize with a real X window manager. em-x11 has no WM,
+so the sync is unnecessary. Skipping it lets window creation proceed.
+
+### Experiment 12b: --wrap Tk_TkwaitObjCmd
+
+`Tk_TkwaitObjCmd` (in `tkCmds.c`) is the C implementation of the `tkwait`
+Tcl command. It calls `Tcl_DoOneEvent(0)` (blocking) in a loop waiting for
+a variable write, window destruction, or visibility change. All standard
+dialogs (`tk_messageBox`, `filedialog`, `colorchooser`) depend on `tkwait`
+to block execution until the user interacts with the dialog.
+
+**Changes**:
+- Created `src/patch/tkCmds_wrap.c` — defines `__wrap_Tk_TkwaitObjCmd`
+  that re-implements the same logic but with `Tcl_DoOneEvent(TCL_DONT_WAIT)`
+  (non-blocking) + a 100ms timeout (via `emscripten_get_now()`).
+- Makefile: `-Wl,--wrap=Tk_TkwaitObjCmd` added.
+
+**Result**: **OOM crash.** The 100ms window contains tens of thousands of
+`Tcl_DoOneEvent(TCL_DONT_WAIT)` iterations, each allocating Tcl event
+structures. Memory exhausts before 100ms elapses. More fundamentally,
+even without the OOM, events never arrive — the main thread's compositor
+never processes X11 requests because the worker never yields to the
+browser event loop.
+
+**Why this fails**: `tkwait` is fundamentally different from
+`WaitForConfigureNotify`. The latter can be skipped (no functional impact
+in em-x11's WM-less environment). `tkwait` MUST wait for user interaction —
+skipping it breaks the API contract (callers expect the dialog result to
+be set after `tkwait` returns). Making it non-blocking without a working
+yield mechanism creates a tight spin that exhausts memory.
+
+### Experiment 12c: emscripten_sleep from side module (re-verified)
+
+The ctypes callback (`g_poll_yield_fn`) was disabled so poll() would fall
+through to `emscripten_sleep()`. The poll.c comment (June 2026) claims
+`emscripten_sleep` works for JSPI from side modules.
+
+**Result**: **Freeze (confirmed).** Same as Experiment 2. The side module's
+import of `emscripten_sleep` lacks JSPI suspending attributes, so the
+returned Promise is discarded. The poll() loop spins without yielding.
+
+This contradicts the poll.c comment — `emscripten_sleep` from side modules
+does NOT work, at least in Pyodide's `loadDynlib` path with Emscripten
+5.0.3.
+
+### Key finding: --wrap mechanism is viable
+
+The `--wrap` infrastructure works. It allows patching individual exported
+Tk functions from source files in the pyodide-tk repo, without touching
+`ignored-area/` or `tcldide/`. The approach cleanly separates patched
+code from upstream Tcl/Tk source.
+
+However, the `tkwait` experiment shows that simply converting blocking
+calls to non-blocking is not sufficient — the underlying event delivery
+pipeline (em-x11 compositor → ring buffer → worker) requires the browser
+event loop to run, which requires a real yield mechanism that side modules
+cannot provide.
+
 ## Experiment results summary
 
 | # | Approach | Mechanism | Result |
@@ -461,11 +611,15 @@ prevents X11 request processing and freezes before `Tk_MapWindow` completes.
 | 8b | dlsym Tcl_Eval → Tcl yield | Runtime dlsym lookup | freeze (symbol not found) |
 | 9 | dlsym PyRun_SimpleString | Runtime dlsym → Python yield | SuspendError (JS trampoline) |
 | 10 | extern PyRun_SimpleString | Load-time import → Python yield | SuspendError (JS trampoline) |
-| 11 | **EM_JS Atomics.wait** | **Sync JS blocking, no JSPI** | **freeze (compositor not autonomous)** |
+| 11 | EM_JS Atomics.wait | Sync JS blocking, no JSPI | freeze (compositor not autonomous) |
+| 12a | **--wrap TkUnixDoOneXEvent** | **Link-time function override** | **freeze moved (infra works!)** |
+| 12b | --wrap Tk_TkwaitObjCmd (TCL_DONT_WAIT) | Link-time + non-blocking loop | OOM (tight spin, no events arrive) |
+| 12c | emscripten_sleep re-verified | Side-module import → JSPI | freeze (confirmed: no JSPI attrs) |
+| 13 | **Python tkwait override via createcommand** | **Tcl cmd → Python yield** | **SuspendError (JS trampoline in call path)** |
 
 ## Root cause (final)
 
-After 11 experiments, the root cause of dialog freeze is established at
+After 13 experiments, the root cause of dialog freeze is established at
 two levels:
 
 **Level 1 (JSPI)**: From a side module, no mechanism can trigger JSPI
@@ -475,6 +629,8 @@ suspension. Every conceivable path has been tried and fails:
 - side-module-to-main-module calls → JS trampoline (SuspendError)
 - side-module-to-side-module calls → Tcl_Eval can't be found by dlsym
 - Python C API via extern → JS trampoline (SuspendError)
+- **Python tkwait via createcommand → JS trampoline (SuspendError)** (Experiment 13)
+- EM_JS Atomics.wait → compositor not autonomous (freeze)
 
 **Level 2 (Atomics/blocking)**: Blocking the worker without JSPI doesn't
 work either. The main thread's em-x11 compositor is NOT an autonomous rAF
@@ -489,24 +645,47 @@ The two requirements are contradictory:
 - Side modules ALWAYS insert JS frames on cross-module calls
 - Therefore: **a side module can never trigger JSPI suspension**
 
-## Fix direction
+## Fix direction (updated after Experiment 13)
 
-The yield **must** originate from Python code running in the main
-module's Wasm context, where `run_sync(asyncio.sleep(...))` triggers
-JSPI through the main module's properly-configured suspending imports.
-This means the blocking call must unwind back to Python's mainloop,
-not be intercepted inside poll().
+The yield **must** originate from Python code that is called directly from the
+main module's JS event loop (e.g. `callPyObjectMaybePromising` → setTimeout →
+JSPI resume), NOT from a Tcl callback context. Any Python function invoked
+via Tcl command dispatch (button `-command`, `createcommand`, variable trace,
+`tk.call`) crosses a side-module-to-main-module boundary with a JS trampoline,
+which blocks JSPI suspension.
 
 Approaches ruled out:
-- All 11 poll.c-level yield mechanisms
+- All 11 poll.c-level yield mechanisms (Experiments 1–5, 8–11)
+- Python-level `tk.call` interception (Experiment 6): wrong layer — Tcl
+  commands like `tk_messageBox` call `tkwait` internally, invisible to Python
+- Tcl-level `tkwait` replacement via `createcommand` (Experiment 7): freeze
+  occurs before `tkwait` is reached — `WaitForConfigureNotify` blocks first
+- Non-blocking `Tk_TkwaitObjCmd` replacement (Experiment 12b): OOM + no events
+  arrive — `tkwait` MUST block per Tk API contract, and tight spin without
+  yield is not viable
+- **Python tkwait override via createcommand + run_sync (Experiment 13)**:
+  SuspendError — JS trampoline in the Tcl→Python call path blocks JSPI
+- Any approach that calls `run_sync`/`asyncio.sleep` from a Tcl callback
+  context (button `-command`, variable trace, `createcommand`, etc.) — the
+  side-module→main-module JS trampoline is unavoidable
+
+Approaches proven viable:
+- `--wrap TkUnixDoOneXEvent` (Experiment 12a): successfully bypassed
+  `WaitForConfigureNotify`. Clean source separation (patches in `src/patch/`,
+  tracked by git, no modification to `ignored-area/` or `tcldide/`).
 
 Remaining options:
 - **Browser-native dialogs**: Use `<input type="file">`, `window.confirm()`,
   etc. from JS and relay results to Python. No Tcl blocking event loop
-  involved.
-- **Asynchronous dialog API**: Rewrite `tkinter.filedialog`/`messagebox`/
-  `colorchooser` to use async/await instead of blocking `tkwait window`.
-- **Tcl/Tk source patching**: Modify Tk's internal blocking waits
-  (`WaitForConfigureNotify`, `WaitForMapNotify`, `tkwait`) to return to
-  Python's mainloop instead of calling `Tcl_DoOneEvent(TCL_ALL_EVENTS)`.
-  This is large scope but would fix all blocking paths at once.
+  involved. Simplest and most reliable approach — no JSPI, no C changes.
+- **Atomics.wait + autonomous compositor** (refined Plan A): Make the main
+  thread's rAF loop drive the compositor independently (not gated on worker
+  signals). Worker uses `Atomics.wait` in poll() (not JSPI). Requires changes
+  in em-x11 compositor architecture and a SAB-based input ring buffer for
+  delivering mouse/key events during worker blocking. Complex, but keeps
+  standard Tk dialog APIs working.
+- **SAB input ring + C-level tkwait with compose**: Worker's tkwait loop
+  calls `composeNow()` synchronously (via EM_JS) after each
+  `Tcl_DoOneEvent(TCL_DONT_WAIT)`. Main thread writes input events to a SAB
+  ring buffer that C code reads directly (bypassing postMessage). This avoids
+  both JSPI and em-x11 compositor changes, but requires SAB plumbing.
