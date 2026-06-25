@@ -189,7 +189,6 @@ $(THIRDPARTY)/tk/unix/Makefile: $(THIRDPARTY)/tk/unix/configure $(LIBDIR)/libtcl
 	# Force our flags + header order over what configure's probe inserts.
 	cd $(THIRDPARTY)/tk/unix && sed -i 's/-O2//g' Makefile
 	cd $(THIRDPARTY)/tk/unix && sed -i 's|^X11_INCLUDES[[:space:]]*=.*|X11_INCLUDES = -I$(EM_X11_INCLUDES)|' Makefile
-
 $(THIRDPARTY)/tk/unix/libtk8.6.a: $(THIRDPARTY)/tk/unix/Makefile
 	cd $(THIRDPARTY)/tk/unix && emmake make -j libtk8.6.a libtkstub8.6.a
 
@@ -296,33 +295,33 @@ EM_X11_ARCHIVES = \
 EM_X11_RELINK = -Wl,--whole-archive $< -Wl,--no-whole-archive
 EM_X11_SO_FLAGS = $(WASMEH) $(JSPI_FLAGS) -sSIDE_MODULE=1 $(OPT)
 
-$(LIBDIR)/libem_x11_libc_override.so: $(EM_X11_BUILD_DIR)/libem_x11_libc_override.a
+$(LIBDIR)/libem_x11_libc_override.so: $(EM_X11_BUILD_DIR)/libem_x11_libc_override.a $(EM_X11_STAMP)
 	mkdir -p $(LIBDIR)
 	emcc $(EM_X11_SO_FLAGS) -o $@ \
 		$(EM_X11_RELINK) \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
-$(LIBDIR)/libX11.so: $(EM_X11_BUILD_DIR)/libX11.a $(LIBDIR)/libem_x11_libc_override.so
+$(LIBDIR)/libX11.so: $(EM_X11_BUILD_DIR)/libX11.a $(LIBDIR)/libem_x11_libc_override.so $(EM_X11_STAMP)
 	emcc $(EM_X11_SO_FLAGS) -o $@ \
 		$(EM_X11_RELINK) $(LIBDIR)/libem_x11_libc_override.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
-$(LIBDIR)/libXext.so: $(EM_X11_BUILD_DIR)/libXext.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so
+$(LIBDIR)/libXext.so: $(EM_X11_BUILD_DIR)/libXext.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so $(EM_X11_STAMP)
 	emcc $(EM_X11_SO_FLAGS) -o $@ \
 		$(EM_X11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
-$(LIBDIR)/libXrender.so: $(EM_X11_BUILD_DIR)/libXrender.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so
+$(LIBDIR)/libXrender.so: $(EM_X11_BUILD_DIR)/libXrender.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so $(EM_X11_STAMP)
 	emcc $(EM_X11_SO_FLAGS) -o $@ \
 		$(EM_X11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
-$(LIBDIR)/libfontconfig.so: $(EM_X11_BUILD_DIR)/libfontconfig.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so
+$(LIBDIR)/libfontconfig.so: $(EM_X11_BUILD_DIR)/libfontconfig.a $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so $(EM_X11_STAMP)
 	emcc $(EM_X11_SO_FLAGS) -o $@ \
 		$(EM_X11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libtcl8.6.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
 
-$(LIBDIR)/libXft.so: $(EM_X11_BUILD_DIR)/libXft.a $(LIBDIR)/libX11.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so $(LIBDIR)/libtcl8.6.so
+$(LIBDIR)/libXft.so: $(EM_X11_BUILD_DIR)/libXft.a $(LIBDIR)/libX11.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so $(LIBDIR)/libtcl8.6.so $(EM_X11_STAMP)
 	emcc $(EM_X11_SO_FLAGS) -o $@ \
 		$(EM_X11_RELINK) $(LIBDIR)/libX11.so $(LIBDIR)/libXrender.so $(LIBDIR)/libfontconfig.so $(LIBDIR)/libtcl8.6.so \
 		-sERROR_ON_UNDEFINED_SYMBOLS=0
