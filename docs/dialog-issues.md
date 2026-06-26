@@ -510,6 +510,283 @@ context, including:
 - Using `after` callbacks to yield during dialog waits
 - Any form of `run_sync` or `asyncio.sleep` from within Tcl→Python callbacks
 
+## Experiment 14: emscripten_sleep third verification + poll.c comment fix (2026-06-26)
+
+After Experiment 13 confirmed the JS trampoline is unavoidable for Tcl→Python
+calls, one question remained: poll.c's comment claimed `emscripten_sleep` from
+side modules "JSPI suspends correctly (verified June 2026)", which directly
+contradicted Experiments 2 and 12c.
+
+To eliminate the possibility that the ctypes callback was somehow interfering
+(e.g. callback throws, side-module state corrupted), the ctypes
+`g_poll_yield_fn` registration in worker.ts was completely disabled. With
+no callback set, poll()'s blocking path falls through to the raw
+`emscripten_sleep()` import.
+
+**Result**: **Freeze (confirmed for the third time).** Dialog hangs,
+buttons unresponsive, same as Experiments 2 and 12c. The side module's
+`emscripten_sleep` import returns a Promise but JSPI does NOT suspend —
+Emscripten 5.0.3's JSPI wrappers only cover the main module's imports.
+
+**Action taken**: Updated poll.c's comment to reflect the actual situation:
+in a standalone JSPI build, `emscripten_sleep` works; in Pyodide's
+side-module context, neither `emscripten_sleep` nor ctypes callback can
+trigger JSPI suspension. The comment now correctly documents the limitation.
+
+**Key takeaway**: The contradiction between poll.c and worker.ts comments
+is now resolved — worker.ts was right all along. `emscripten_sleep` from
+side modules does NOT suspend in Emscripten 5.0.3 + Pyodide. Both poll.c
+suspend paths are dead in the Pyodide worker context.
+
+## Experiment 15: WebAssembly.Suspending wrapper on wasmImports (2026-06-26)
+
+**Hypothesis**: The side module's `emscripten_sleep` import lacks JSPI
+suspending attributes because Pyodide's `loadDynlib` → `loadWebAssemblyModule`
+→ `proxyHandler.get()` returns `wasmImports[prop]` directly, without
+`WebAssembly.Suspending()` wrapping. If we inject a `new WebAssembly.Suspending(fn)`
+into `wasmImports` BEFORE loading side modules, the proxy would return the
+Suspending-wrapped function, and JSPI should suspend when the side module calls it.
+
+The side modules are compiled with `-sJSPI=1` (Makefile line 64), so their
+wasm binaries SHOULD declare `emscripten_sleep` as a suspending import.
+
+**Change (worker.ts line 354)**:
+
+```typescript
+// Before (freeze):
+wasmImports['emscripten_sleep'] = (ms: number) => {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+};
+
+// After (Experiment 15):
+wasmImports['emscripten_sleep'] = new WebAssembly.Suspending((ms: number) => {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+});
+```
+
+### Phase 1: Minimal Node.js test (ctypes path)
+
+Used `py.runPythonAsync()` (promising entry) with ctypes to call `poll()` from
+`libem_x11_libc_override.so` with empty fd set and 100ms timeout. The
+`g_poll_yield_fn` callback was set to `None` so poll() falls through to
+`emscripten_sleep`.
+
+**Result: `SuspendError: trying to suspend JS frames`**
+
+Stack trace:
+```
+wasm-function[26] (side module: emscripten_sleep import call)
+  → ffi_call_js (JS: ctypes FFI trampoline)
+    → wasm-function[5354] (main module: CPython)
+```
+
+The ctypes path has `ffi_call_js` between main/side module wasm frames —
+expected to fail. But critically: JSPI now RECOGNIZES the suspending import
+and ATTEMPTS to suspend. Before this change, the raw function was silently
+ignored (freeze). This confirms the Suspending wrapper is correct.
+
+Side modules loaded OK — no WebAssembly type mismatch on instantiation. The
+Suspending wrapper matches the side module's JSPI import declaration.
+
+### Phase 2: Browser test (real dialog path)
+
+Tested in browser with Widget Gallery demo. Clicked a button that opens
+`filedialog.askopenfilename()`.
+
+**Result: `SuspendError: trying to suspend JS frames`** (repeated 277 times
+in console, followed by OOM after prolonged freeze). The SuspendError is
+fatal (`pyodide_fatal_error: true`), crashing the Pyodide runtime.
+
+Browser stack trace:
+```
+pyodide.asm.wasm (main module: _pyproxy_apply_promising)
+  → trampoline_call @ 63d3739a:0xa7        ← JS frame (side-module import stub)
+    → pyodide.asm.wasm (main module: PyObject_Call, _PyEval_EvalFrameDefault, ...)
+      → trampoline_call @ 63d3739a:0xa7    ← JS frame (side-module import stub)
+        → pyodide.asm.wasm (main module: _pyproxy_apply)
+          → JsvFunction_CallBound → scheduleCallback → postMessage → setTimeout
+```
+
+**Why it still fails**: Emscripten's dynamic linker inserts a `trampoline_call`
+JS frame on EVERY cross-module call. The real dialog path is NOT pure
+wasm-to-wasm as previously assumed:
+
+```
+Before assumption:
+  Python → _tkinter → Tcl → poll → emscripten_sleep
+  (all wasm-to-wasm function table calls)
+
+Actual reality:
+  Python → trampoline_call(JS) → _tkinter → trampoline_call(JS) → Tcl
+    → trampoline_call(JS) → poll → emscripten_sleep(Suspending)
+    → JSPI walks stack → finds trampoline_call JS frame → SuspendError
+```
+
+Each `.so` file has its own wasm module instance with its own function table.
+Cross-module calls go through JS trampolines that translate function table
+indices. These JS frames are compiled INTO each side module by Emscripten
+(`-sSIDE_MODULE=1`). They cannot be bypassed at the import/export level.
+
+### Key takeaway
+
+The `WebAssembly.Suspending` wrapper on `wasmImports` IS correct and WORKS —
+JSPI now recognizes the suspending import and attempts to suspend. This is
+progress from Experiments 2/12c/14 where the raw function was silently ignored.
+
+However, the JS trampolines inherent in Emscripten's dynamic linker
+architecture are the NEXT blocker. Even with a properly JSPI-wrapped import,
+suspension fails because the wasm stack between the promising entry and the
+suspending import is NOT contiguous — it's split by `trampoline_call` JS
+frames at every cross-module boundary.
+
+This rules out ALL approaches that rely on JSPI from side modules, regardless
+of import wrapping technique.
+
+## Experiment 16: Force JS trampoline — isolate trampoline module (2026-06-26)
+
+Experiment 15 showed `trampoline_call @ 63d3739a:0xa7` in the browser stack
+trace. This is a **wasm trampoline module** — a separate `WebAssembly.Instance`
+created by `getPyEMTrampolinePtr()` from a hardcoded hex wasm binary. It sits
+between main-module and side-module frames. Since it's NOT compiled with
+`-sJSPI=1`, JSPI might treat it as non-JSPI wasm and reject suspension.
+
+**Hypothesis**: The wasm trampoline module (separate instance, no JSPI) is the
+specific blocker. If we force Pyodide to use the JS trampoline instead (a JS
+function that does `wasmTable.get(func)(arg1, arg2, arg3)`), the stack would
+have a JS frame — equally fatal for JSPI, but for a *different reason*
+("trying to suspend JS frames" vs "non-JSPI wasm in middle"). If the error
+changes, the trampoline module is the addressable blocker.
+
+**Change (`pyodide.asm.mjs`, `getPyEMTrampolinePtr`)**:
+
+Forced the function to return 0 immediately, which causes Pyodide to fall
+back to `_PyEM_TrampolineCall_JS` — a JS function that does raw
+`wasmTable.get(func)(arg1, arg2, arg3)`. This eliminates the wasm trampoline
+instance from the call chain entirely.
+
+**Result: `SuspendError: trying to suspend JS frames`** — same error, same
+message. Whether the trampoline is:
+- JS function (`_PyEM_TrampolineCall_JS`): "trying to suspend JS frames"
+- Wasm module (`trampoline_call @ 63d3739a`): "trying to suspend JS frames"
+
+Both produce identical failures. The trampoline module is NOT the uniquely
+addressable blocker — the very concept of cross-module calls (which Emscripten's
+dynamic linker fundamentally requires) creates a non-suspendable boundary.
+
+**The two trampoline mechanisms in Pyodide**:
+
+| Mechanism | What it is | JSPI-compatible? |
+|-----------|-----------|------------------|
+| `_PyEM_TrampolineCall_JS` | JS function: `wasmTable.get(func)(args)` | No — JS frame |
+| `trampoline_call` (wasm) | Separate `WebAssembly.Instance` from hex | No — not compiled with `-sJSPI=1` |
+
+Neither can be fixed at runtime. Recompiling the wasm trampoline with
+`-sJSPI=1` would require modifying Pyodide's build system; making cross-module
+calls direct (without trampolines) would require merging all side modules into
+a single wasm instance — neither is achievable via runtime patching of
+`pyodide.asm.mjs`.
+
+**Key takeaway**: Approach B (消灭 trampoline_call) is infeasible. The
+trampoline is a fundamental architectural component of Emscripten's dynamic
+linker, not a bug or oversight that can be patched at the JS level.
+
+This rules out ALL approaches that rely on JSPI from side modules, regardless
+of import wrapping technique.
+
+## Experiment 17: Bypass addFunction — direct wasmTable.set (2026-06-26)
+
+After full decode of the 493-byte trampoline wasm module, the root cause of
+the JS frame is identified: **NOT the trampoline module itself, but
+`addFunction()` in `getPyEMTrampolinePtr`**.
+
+### Trampoline module architecture
+
+The decoded trampoline module:
+- 5 function types: `(i32,i32,i32)→i32`, `(i32,i32)→i32`, `(i32)→i32`,
+  `()→i32`, `(i32,i32,i32,i32,i32)→i32`
+- Imports only `env.memory` and `env.__indirect_function_table` — **no JS
+  function imports**
+- Exports `trampoline_call` — uses `br_table` dispatch + `call_indirect` to
+  normalize function pointer signatures (handles bad C function pointer casts)
+- Contains no suspending imports — recompiling with `-sJSPI=1` would change
+  zero bytes in the wasm binary
+
+### Where the JS frame actually comes from
+
+```js
+// getPyEMTrampolinePtr() in pyodide.asm.mjs:
+return addFunction(trampolineInstance.exports.trampoline_call);
+```
+
+`addFunction()` wraps the wasm export in a JS function and places the JS
+wrapper in `wasmTable`. When C code does `call_indirect` through this table
+entry, the call chain is:
+
+```
+Wasm (main/side module) → call_indirect → JS wrapper (addFunction) → trampoline wasm
+```
+
+The JS wrapper IS the JS frame that JSPI can't save. The trampoline wasm
+module itself is pure wasm — it's the `addFunction` mechanism that introduces
+the JS frame.
+
+### Hypothesis
+
+Replace `addFunction()` with direct `wasmTable.grow()` + `wasmTable.set()`:
+
+```js
+const idx = wasmTable.length;
+wasmTable.grow(1);
+wasmTable.set(idx, trampolineInstance.exports.trampoline_call);
+return idx;
+```
+
+This places the wasm export directly in the table (no JS wrapper). `call_indirect`
+through this entry would be pure wasm→wasm. If this eliminates the JS frame, JSPI
+should be able to suspend through the trampoline.
+
+### Caveat
+
+Even if this works for the trampoline, side modules still have JS import stubs
+(`proxyHandler.get` returns JS functions). The trampoline is just ONE of several
+JS frames in the cross-module call chain. This is a necessary but potentially
+insufficient fix.
+
+**Changes**:
+-  (): replaced  with:
+  
+  This places the wasm export directly in the table (no JS wrapper). Fallback to
+   if grow/set fails.
+-  (line 354):  wrapped in 
+  (re-applied from Experiment 15 — needed so JSPI recognizes the suspending import)
+
+**Status**: **FAILED — same SuspendError**
+
+Browser test result: `SuspendError: trying to suspend JS frames`, identical to
+Experiments 15 and 16.
+
+**Why**: Eliminating the `addFunction` JS wrapper on the trampoline entry was
+necessary but insufficient. The JS frames that block JSPI come from multiple
+sources in the cross-module call chain, not just the trampoline:
+
+1. **`proxyHandler.get()`** in `loadWebAssemblyModule` returns `wasmImports[prop]`
+   directly — which is a JS function. When a side module calls an import like
+   `emscripten_sleep`, this JS→wasm boundary creates a JS frame.
+2. **Side-module import stubs** — each `.so` has Emscripten-generated JS stubs
+   for cross-module calls. These are compiled into every side module.
+3. **Multiple trampoline crossings** — the browser stack trace (Experiment 15)
+   shows TWO `trampoline_call` frames. Even with one fixed, the other remains.
+
+The trampoline's `addFunction` wrapper was ONE JS frame among several. Removing
+it doesn't eliminate the fundamental problem: Emscripten's dynamic linker
+architecturally requires JS frames at every module boundary.
+
+**Key takeaway from Experiments 15–17**: All three experiments attempted to fix
+JSPI suspension from different angles (import wrapping, trampoline elimination,
+direct table manipulation). All three produced the same `SuspendError`. JSPI
+from side modules is impossible without redesigning Emscripten's dynamic linker.
+This approach is conclusively dead.
+
 ## Experiment 12: Source-level function override via --wrap (2026-06-25)
 
 Instead of modifying poll.c or worker.ts yield mechanisms, this approach
@@ -616,10 +893,14 @@ cannot provide.
 | 12b | --wrap Tk_TkwaitObjCmd (TCL_DONT_WAIT) | Link-time + non-blocking loop | OOM (tight spin, no events arrive) |
 | 12c | emscripten_sleep re-verified | Side-module import → JSPI | freeze (confirmed: no JSPI attrs) |
 | 13 | **Python tkwait override via createcommand** | **Tcl cmd → Python yield** | **SuspendError (JS trampoline in call path)** |
+| 14 | **emscripten_sleep third verification + poll.c fix** | **Side-module import, ctypes off** | **freeze (confirmed yet again; poll.c comment corrected)** |
+| 15 | **WebAssembly.Suspending on wasmImports** | **JSPI-wrapped import from side module** | **SuspendError (trampoline_call JS frames between modules)** |
+| 16 | **Force JS trampoline (disable wasm trampoline)** | **Isolate trampoline module as blocker** | **SuspendError (both trampolines equally fatal)** |
+| 17 | **Direct wasmTable.set (bypass addFunction)** | **Eliminate addFunction JS wrapper** | **SuspendError (JS frames at every module boundary, not just trampoline)** |
 
 ## Root cause (final)
 
-After 13 experiments, the root cause of dialog freeze is established at
+After 17 experiments, the root cause of dialog freeze is established at
 two levels:
 
 **Level 1 (JSPI)**: From a side module, no mechanism can trigger JSPI
@@ -630,6 +911,7 @@ suspension. Every conceivable path has been tried and fails:
 - side-module-to-side-module calls → Tcl_Eval can't be found by dlsym
 - Python C API via extern → JS trampoline (SuspendError)
 - **Python tkwait via createcommand → JS trampoline (SuspendError)** (Experiment 13)
+- **WebAssembly.Suspending on wasmImports → trampoline_call JS frames (SuspendError)** (Experiment 15)
 - EM_JS Atomics.wait → compositor not autonomous (freeze)
 
 **Level 2 (Atomics/blocking)**: Blocking the worker without JSPI doesn't
@@ -644,6 +926,16 @@ The two requirements are contradictory:
 - To yield via JSPI: call chain must have no JS frames between Wasm blocks
 - Side modules ALWAYS insert JS frames on cross-module calls
 - Therefore: **a side module can never trigger JSPI suspension**
+
+**Experiment 15 refined this understanding**: The `trampoline_call` JS frame
+is NOT just for side-module→main-module calls — it appears on EVERY
+cross-module boundary, including side-module→side-module calls. Each `.so`
+has its own wasm module instance with its own function table, and
+Emscripten compiles JS trampolines into each side module to handle
+cross-instance function table calls. These trampolines are a fundamental
+part of Emscripten's dynamic linker architecture and cannot be bypassed
+at the import/export level (Experiment 15) or the symbol resolution level
+(Experiments 8–10, 13).
 
 ## Fix direction (updated after Experiment 13)
 
@@ -668,11 +960,35 @@ Approaches ruled out:
 - Any approach that calls `run_sync`/`asyncio.sleep` from a Tcl callback
   context (button `-command`, variable trace, `createcommand`, etc.) — the
   side-module→main-module JS trampoline is unavoidable
+- **WebAssembly.Suspending wrapper on wasmImports (Experiment 15)**:
+  SuspendError — JSPI recognizes the suspending import and attempts to
+  suspend, but `trampoline_call` JS frames at every cross-module boundary
+  split the wasm stack into non-contiguous blocks. The import wrapping is
+  correct; the dynamic linker's JS trampolines are the unfixable blocker.
+- **Force JS trampoline / disable wasm trampoline module (Experiment 16)**:
+  SuspendError — both trampoline mechanisms (JS function and separate wasm
+  module instance) produce the same failure. The trampoline module is NOT
+  the uniquely addressable blocker; Emscripten's cross-module call
+  architecture as a whole is incompatible with JSPI suspension.
+- **Direct wasmTable.set bypass addFunction (Experiment 17)**:
+  SuspendError — eliminating the `addFunction` JS wrapper on the trampoline
+  is insufficient. JS frames come from multiple sources (import stubs,
+  proxyHandler.get, multiple trampoline crossings). Removing one leaves
+  the others intact. Approach B (消灭 trampoline_call) is conclusively
+  infeasible without redesigning Emscripten's dynamic linker.
 
 Approaches proven viable:
 - `--wrap TkUnixDoOneXEvent` (Experiment 12a): successfully bypassed
   `WaitForConfigureNotify`. Clean source separation (patches in `src/patch/`,
   tracked by git, no modification to `ignored-area/` or `tcldide/`).
+
+Approaches conclusively ruled out:
+- **Approach B: 消灭 trampoline_call (Experiments 15–16)**: The trampoline
+  is a fundamental architectural component of Emscripten's dynamic linker.
+  Both trampoline mechanisms (JS function and separate wasm module instance)
+  produce the same SuspendError. Cannot be eliminated via runtime patching
+  of `pyodide.asm.mjs` — would require recompiling Pyodide's trampoline
+  module with `-sJSPI=1` or merging all wasm modules into a single instance.
 
 Remaining options:
 - **Browser-native dialogs**: Use `<input type="file">`, `window.confirm()`,
