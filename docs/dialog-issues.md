@@ -144,5 +144,5 @@ symbols, function pointer casts) between `WebAssembly.promising()` entry and
 
 After these land, Pyodide's `loadDynlib` will also need to wrap side-module
 exports with `WebAssembly.promising` so ctypes→side module→suspend chains work.
-At that point, `emscripten_sleep` in poll.c should work directly — no SAB ring
-needed.  The SAB ring + Option C code can be reverted.
+At that point, `emscripten_sleep` in poll.c should work directly, no SAB ring
+needed.

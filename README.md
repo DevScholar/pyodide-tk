@@ -44,7 +44,7 @@ These are known issues that remain unresolved despite repeated attempts.
 
 - In EmX11, running both TWM and Tcldide simultaneously causes the web page to freeze.
 
-- When attempting to open any dialog box in Common Dialogs, the web page freezes.
+- When attempting to open any dialog box in Common Dialogs, the web page freezes. (See [dialog-issues.md](docs/dialog-issues.md) for details.)
 
 # License
 
